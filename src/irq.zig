@@ -5,11 +5,11 @@ const idt = @import( "./idt.zig" );
 const isr = @import( "./isr.zig" );
 
 pub const Interrupt = struct {
-	const Pit      = 0x20;
-	const Keyboard = 0x21;
-	const Com2     = 0x22;
-	const Com1     = 0x23;
-	const Syscall  = 0x80;
+	pub const Pit      = 0x20;
+	pub const Keyboard = 0x21;
+	pub const Com2     = 0x22;
+	pub const Com1     = 0x23;
+	pub const Syscall  = 0x80;
 };
 
 const Register = struct {
@@ -24,8 +24,8 @@ const Command = struct {
 	const EndOfInterrupt = 0x20;
 };
 
-const IrqHandler = ?*fn( *x86.State ) void;
-var handlers: [256 - 32]?( *const fn( *x86.State ) void ) = .{ null } ** ( 256 - 32 );
+const IrqHandler = *const fn( *x86.State ) void;
+var handlers: [256 - 32]?IrqHandler = .{ null } ** ( 256 - 32 );
 
 pub fn init() void {
 	x86.out( u8, Register.Pic1Command, Command.Init );

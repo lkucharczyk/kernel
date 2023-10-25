@@ -1,6 +1,7 @@
 const std = @import( "std" );
 const arch = @import( "./x86.zig" );
 const com = @import( "./com.zig" );
+const kbd = @import( "./kbd.zig" );
 const mem = @import( "./mem.zig" );
 const tty = @import( "./tty.zig" );
 const multiboot = @import( "./multiboot.zig" );
@@ -93,15 +94,24 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	arch.enableInterrupts();
 
 	if ( mbMagic == multiboot.Info.MAGIC ) {
-		log.print( "multiboot: {x:0>8}\n{any}\n\n", .{ mbMagic, mbInfo } ) catch unreachable;
+		log.printUnsafe( "multiboot: {x:0>8}\n{any}\n\n", .{ mbMagic, mbInfo } );
 	}
 
-	if ( com.ports[0] ) |com0| {
-		var buf: [1]u8 = .{ 0 };
-		while ( com0.read( &buf ) > 0 ) {
-			_ = log.write( &buf ) catch unreachable;
-		}
+	if ( @import( "./acpi/rsdp.zig" ).init() ) |rsdp| {
+		log.printUnsafe( "rsdp: {*}\n{}\n\n", .{ rsdp, rsdp } );
 	}
+
+	kbd.init();
+
+	var buf: [1]u8 = .{ 0 };
+	while ( ( kbd.read( null, &buf ) catch unreachable ) > 0 ) {
+		_ = log.write( &buf ) catch unreachable;
+	}
+	// if ( com.ports[0] ) |com0| {
+	// 	while ( com0.read( &buf ) > 0 ) {
+	// 		_ = log.write( &buf ) catch unreachable;
+	// 	}
+	// }
 
 	// arch.halt();
 	@panic( "kmain end" );

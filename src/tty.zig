@@ -55,6 +55,8 @@ fn putc( c: u8 ) void {
 		0x08 => { // \b
 			if ( col > 0 ) {
 				col -= 1;
+				const i: usize = ( cols * row ) + col;
+				buf[i] = color | ' ';
 			}
 		},
 		'\n' => {

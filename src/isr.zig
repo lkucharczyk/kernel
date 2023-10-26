@@ -1,14 +1,15 @@
+const gdt = @import( "./gdt.zig" );
 const idt = @import( "./idt.zig" );
 const irq = @import( "./irq.zig" );
 const x86 = @import( "./x86.zig" );
 
 export fn isrPanicWrapper() callconv(.Naked) noreturn {
-	x86.saveState();
+	x86.saveState( true );
 	asm volatile ( "call isrPanic" );
 }
 
 export fn irqHandlerWrapper() callconv(.Naked) noreturn {
-	x86.saveState();
+	x86.saveState( true );
 	asm volatile ( "call irqHandler" );
 	x86.restoreState();
 	asm volatile ( "iret" );
@@ -47,6 +48,6 @@ pub fn init() void {
 	// panic on exceptions
 	inline for ( 0..32 ) |i| {
 		const stub = getStub( i, true );
-		idt.table[i].set( @intFromPtr( &stub ), 0x08 );
+		idt.table[i].set( @intFromPtr( &stub ), gdt.Segment.KERNEL_CODE );
 	}
 }

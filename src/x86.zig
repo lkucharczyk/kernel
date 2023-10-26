@@ -23,6 +23,22 @@ pub const State = extern struct {
 	ss: u32
 };
 
+pub const StackPtr = extern struct {
+	esp: u32,
+	ebp: u32,
+
+	pub inline fn get() StackPtr {
+		return .{
+			.esp = asm volatile ( "" : [_] "={esp}" ( -> u32 ) ),
+			.ebp = asm volatile ( "" : [_] "={ebp}" ( -> u32 ) )
+		};
+	}
+
+	pub inline fn set( self: StackPtr ) void {
+		asm volatile ( "" :: [esp] "{esp}" ( self.esp ), [_] "{ebp}" ( self.ebp ) );
+	}
+};
+
 pub const TablePtr = extern struct {
 	limit: u16 align(1),
 	base: u32 align(1),
@@ -64,13 +80,13 @@ pub inline fn in( comptime T: type, port: u16 ) T {
 			: "memory"
 		),
 		16 => asm volatile (
-			"inb %[port], %[val]"
+			"inw %[port], %[val]"
 			: [val] "={ax}" ( -> u16 )
 			: [port] "{dx}" ( port )
 			: "memory"
 		),
 		32 => asm volatile (
-			"inb %[port], %[val]"
+			"inl %[port], %[val]"
 			: [val] "={eax}" ( -> u32 )
 			: [port] "{dx}" ( port )
 			: "memory"
@@ -103,20 +119,27 @@ pub inline fn out( comptime T: type, port: u16, val: T ) void {
 	}
 }
 
-pub inline fn saveState() void {
+pub inline fn saveState( comptime inInt: bool ) void {
+	if ( !inInt ) {
+		asm volatile (
+			\\ pushl %%eax
+			\\ pushl %%eax
+		);
+	}
+
 	asm volatile (
-        \\ pusha
-        \\ push %%ds
-        \\ push %%es
-        \\ push %%fs
-        \\ push %%gs
-        \\ mov $0x10, %%ax
-        \\ mov %%ax, %%ds
-        \\ mov %%ax, %%es
-        \\ mov %%ax, %%fs
-        \\ mov %%ax, %%gs
-        \\ mov %%esp, %%eax
-        \\ pushl %%eax
+		\\ pusha
+		\\ push %%ds
+		\\ push %%es
+		\\ push %%fs
+		\\ push %%gs
+		\\ mov $0x10, %%ax
+		\\ mov %%ax, %%ds
+		\\ mov %%ax, %%es
+		\\ mov %%ax, %%fs
+		\\ mov %%ax, %%gs
+		\\ mov %%esp, %%eax
+		\\ pushl %%eax
 	);
 }
 

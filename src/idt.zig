@@ -19,7 +19,7 @@ pub const Entry = extern struct {
 		self.baseLow = @truncate( base );
 		self.baseHigh = @truncate( base >> 16 );
 		self.selection = selection;
-		self.attrs = .{ .present = true };
+		self.attrs = .{ .present = true, .ring = 3 };
 	}
 
 	pub fn unset( self: *Entry ) void {

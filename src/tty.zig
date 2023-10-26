@@ -1,4 +1,5 @@
 const std = @import( "std" );
+const gdt = @import( "./gdt.zig" );
 const vga = @import( "./vga.zig" );
 const Stream = @import( "./util/stream.zig" ).Stream;
 
@@ -36,6 +37,8 @@ var color: u16 = 0x0700;
 var softLF: bool = false;
 
 pub fn init() void {
+	gdt.setPort( vga.Register.ControlSelect, true );
+	gdt.setPort( vga.Register.ControlData, true );
 	vga.setControlReg( vga.ControlRegister.CursorStart, @intFromEnum( Cursor.Thin ) );
 	clear();
 }

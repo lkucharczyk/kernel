@@ -1,6 +1,7 @@
 const std = @import( "std" );
 const root = @import( "root" );
 const x86 = @import( "./x86.zig" );
+const gdt = @import( "./gdt.zig" );
 const idt = @import( "./idt.zig" );
 const isr = @import( "./isr.zig" );
 
@@ -12,16 +13,16 @@ pub const Interrupt = struct {
 	pub const Syscall  = 0x80;
 };
 
-const Register = struct {
-	const Pic1Command = 0x20;
-	const Pic1Data    = 0x21;
-	const Pic2Command = 0xa0;
-	const Pic2Data    = 0xa1;
+pub const Register = struct {
+	pub const Pic1Command = 0x20;
+	pub const Pic1Data    = 0x21;
+	pub const Pic2Command = 0xa0;
+	pub const Pic2Data    = 0xa1;
 };
 
-const Command = struct {
-	const Init           = 0x11;
-	const EndOfInterrupt = 0x20;
+pub const Command = struct {
+	pub const Init           = 0x11;
+	pub const EndOfInterrupt = 0x20;
 };
 
 const IrqHandler = *const fn( *x86.State ) void;
@@ -41,16 +42,20 @@ pub fn init() void {
 
 	inline for ( 32..( handlers.len + 32 ) ) |i| {
 		const stub = isr.getStub( i, false );
-		idt.table[i].set( @intFromPtr( &stub ), 0x08 );
+		idt.table[i].set( @intFromPtr( &stub ), gdt.Segment.KERNEL_CODE );
 	}
 }
 
-pub fn set( irq: u32, handler: IrqHandler ) void {
+pub fn set( irq: u8, handler: IrqHandler ) void {
 	if ( handlers[irq - 32] != null ) {
 		@panic( "IRQ already set" );
 	}
 
 	handlers[irq - 32] = handler;
+}
+
+pub fn unset( irq: u8 ) void {
+	handlers[irq - 32] = null;
 }
 
 export fn irqHandler( state: *x86.State ) void {

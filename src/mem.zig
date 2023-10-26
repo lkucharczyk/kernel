@@ -19,7 +19,13 @@ pub const PagingDir = extern struct {
 	const Entry = packed struct(u32) {
 		flags: Flags = .{},
 		_: u4 = 0,
-		address: u20 = 0
+		// normal mode
+		//address: u20 = 0
+		// huge pages
+		pat: bool = false,
+		addressHigh: u8 = 0,
+		_1: u1 = 0,
+		addressLow: u10 = 0,
 	};
 
 	entries: [1024]Entry = .{ .{} } ** 1024,
@@ -29,16 +35,17 @@ pub const PagingDir = extern struct {
 
 		var out: PagingDir = .{};
 		const flags: Flags = .{
+			.user = true,
 			.present = true,
 			.writeable = true,
 			.hugePage = true
 		};
 
-		out.entries[0] = .{ .address = 0, .flags = flags };
+		out.entries[0] = .{ .addressLow = 0, .flags = flags };
 
 		const kpage = ADDR_KMAIN_OFFSET >> 22;
 		for ( kpage..( kpage + pages ), 0.. ) |i, j| {
-			out.entries[i] = .{ .address = @truncate( j << 10 ), .flags = flags };
+			out.entries[i] = .{ .addressLow = j, .flags = flags };
 		}
 
 		return out;
@@ -48,6 +55,11 @@ pub const PagingDir = extern struct {
 pub export var pagingDir: PagingDir align(4096) linksection(".multiboot") = PagingDir.init( KMAIN_PAGES );
 
 pub fn init() void {
+	@import( "root" ).log.printUnsafe( "mem: {}/{} KB\n\n", .{
+		( @intFromPtr( &ADDR_KMAIN_END ) - ADDR_KMAIN_OFFSET ) / 1024,
+		KMAIN_PAGES * 4 * 1024
+	} );
+
 	if ( @intFromPtr( &ADDR_KMAIN_END ) > ADDR_KMAIN_OFFSET + KMAIN_PAGES * 4 * 1024 * 1024 ) {
 		@panic( "Not enough pages for static kernel memory" );
 	}

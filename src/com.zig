@@ -1,5 +1,6 @@
 const std = @import( "std" );
 const root = @import( "root" );
+const gdt = @import( "./gdt.zig" );
 const x86 = @import( "./x86.zig" );
 const Stream = @import( "./util/stream.zig" ).Stream;
 
@@ -99,6 +100,8 @@ pub const SerialPort = struct {
 		} );
 
 		if ( com.runSelfTest() ) {
+			gdt.setPort( com.address + RegisterOffset.Data, true );
+			gdt.setPort( com.address + RegisterOffset.LineStatus, true );
 			return com;
 		}
 
@@ -153,7 +156,7 @@ pub const SerialPort = struct {
 	}
 
 	pub fn read( self: SerialPort, buf: []u8 ) usize {
-		self.setInterrupts( .{ .dataAvailable = true } );
+		// self.setInterrupts( .{ .dataAvailable = true } );
 
 		for ( 0..buf.len ) |i| {
 			while ( !self.getLineStatus().dataReady ) {
@@ -166,12 +169,12 @@ pub const SerialPort = struct {
 			}
 		}
 
-		self.setInterrupts( .{} );
+		// self.setInterrupts( .{} );
 		return buf.len;
 	}
 
 	pub fn write( self: SerialPort, buf: []const u8 ) usize {
-		self.setInterrupts( .{ .transmitterEmpty = true } );
+		// self.setInterrupts( .{ .transmitterEmpty = true } );
 
 		for ( buf ) |c| {
 			if ( c == 0 ) {
@@ -199,7 +202,7 @@ pub const SerialPort = struct {
 			self.out( u8, RegisterOffset.Data, c );
 		}
 
-		self.setInterrupts( .{} );
+		// self.setInterrupts( .{} );
 		return buf.len;
 	}
 

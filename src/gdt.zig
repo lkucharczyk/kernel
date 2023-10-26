@@ -1,6 +1,14 @@
 const std = @import( "std" );
 const x86 = @import( "./x86.zig" );
 
+pub const Segment = struct {
+	pub const KERNEL_CODE = 1 << 3;
+	pub const KERNEL_DATA = 2 << 3;
+	pub const USER_CODE   = 3 << 3;
+	pub const USER_DATA   = 4 << 3;
+	pub const TSS         = 5 << 3;
+};
+
 pub const Entry = packed struct(u64) {
 	pub const Access = packed struct(u8) {
 		const KERNEL_CODE = Access {
@@ -85,11 +93,13 @@ pub const Entry = packed struct(u64) {
 	}
 };
 
+const IoMap = std.bit_set.ArrayBitSet( usize, 0x3fff );
+
 pub const Tss = extern struct {
 	link:   u16 align(1) = 0,
 	_0:     u16 align(1) = 0,
 	esp0:   u32 align(1) = 0,
-	ss0:    u16 align(1) = 2 << 3,
+	ss0:    u16 align(1) = Segment.KERNEL_DATA,
 	_1:     u16 align(1) = 0,
 	esp1:   u32 align(1) = 0,
 	ss1:    u16 align(1) = 0,
@@ -123,13 +133,15 @@ pub const Tss = extern struct {
 	ldtr:   u16 align(1) = 0,
 	_10:    u16 align(1) = 0,
 	_11:    u16 align(1) = 0,
-	iopb:   u16 align(1) = @sizeOf( Tss ),
+	iopb:   u16 align(1) = @offsetOf( Tss, "iomap" ),
 	ssp:    u32 align(1) = 0,
+	iomap:  IoMap = IoMap.initFull(),
+	tail:   u8 align(1) = 0xff
 };
 
 var table: [6]Entry = undefined;
 var ptr: x86.TablePtr = undefined;
-var tss: Tss = .{};
+pub var tss: Tss = .{};
 
 pub fn init() void {
 	table[0].set( 0, 0, @bitCast( @as( u8, 0 ) ), @bitCast( @as( u4, 0 ) ) );
@@ -139,13 +151,9 @@ pub fn init() void {
 	table[4].set( 0, 0xfffff, Entry.Access.USER_DATA, .{} );
 	table[5].set( @intFromPtr( &tss ), @sizeOf( Tss ), Entry.Access.TSS, @bitCast( @as( u4, 0 ) ) );
 
-	tss = std.mem.zeroes( Tss );
-	tss.ss0 = 2 << 3;
-	tss.iopb = @sizeOf( Tss );
-
 	ptr = x86.TablePtr.init( Entry, 6, &table );
 	asm volatile ( "lgdt (%%eax)" :: [ptr] "{eax}" ( @intFromPtr( &ptr ) - 0xc000_0000 ) );
-	asm volatile ( "ltr %%ax" :: [id] "{ax}" ( 5 * 8 ) );
+	asm volatile ( "ltr %%ax" :: [id] "{ax}" ( Segment.TSS ) );
 
 	asm volatile (
 		\\ movw %%ax, %%ds
@@ -153,11 +161,15 @@ pub fn init() void {
 		\\ movw %%ax, %%fs
 		\\ movw %%ax, %%gs
 		\\ movw %%ax, %%ss
-		:: [offset] "{ax}" ( 0x10 )
+		:: [offset] "{ax}" ( Segment.KERNEL_DATA )
 	);
 
 	asm volatile (
 		\\ jmp $0x08, $gdt_flush
 		\\ gdt_flush:
 	);
+}
+
+pub fn setPort( port: u16, userMode: bool ) void {
+	tss.iomap.setValue( port, !userMode );
 }

@@ -3,6 +3,7 @@ const arch = @import( "./x86.zig" );
 const com = @import( "./com.zig" );
 const kbd = @import( "./kbd.zig" );
 const mem = @import( "./mem.zig" );
+const task = @import( "./task.zig" );
 const tty = @import( "./tty.zig" );
 const multiboot = @import( "./multiboot.zig" );
 const Stream = @import( "./util/stream.zig" ).Stream;
@@ -21,7 +22,7 @@ export const mbHeader: multiboot.Header align(4) linksection(".multiboot") = mul
 	.memInfo = true
 } );
 
-export var kstack: [64 * 1024]u8 align(4096) linksection(".bss.stack") = undefined;
+export var kstack: [16 * 1024]u8 align(4096) linksection(".bss.kstack") = undefined;
 extern const ADDR_KSTACK_END: u8;
 
 export fn _start() align(16) linksection(".text.boot") callconv(.Naked) noreturn {
@@ -93,6 +94,8 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	@import( "./irq.zig" ).init();
 	arch.enableInterrupts();
 
+	mem.init();
+
 	if ( mbMagic == multiboot.Info.MAGIC ) {
 		log.printUnsafe( "multiboot: {x:0>8}\n{any}\n\n", .{ mbMagic, mbInfo } );
 	}
@@ -101,8 +104,19 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 		log.printUnsafe( "rsdp: {*}\n{}\n\n", .{ rsdp, rsdp } );
 	}
 
+	@import( "./pit.zig" ).init( 50 );
+	@import( "./pci.zig" ).init();
 	kbd.init();
 
+	log.printUnsafe( "\nscheduler:\n", .{} );
+	task.init();
+	inline for ( 1..8 ) |n| {
+		const tfn = taskFn( n );
+		task.create( tfn );
+	}
+	task.schedule();
+
+	log.printUnsafe( "\n\nkbd input:\n", .{} );
 	var buf: [1]u8 = .{ 0 };
 	while ( ( kbd.read( null, &buf ) catch unreachable ) > 0 ) {
 		_ = log.write( &buf ) catch unreachable;
@@ -115,4 +129,20 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 
 	// arch.halt();
 	@panic( "kmain end" );
+}
+
+pub fn taskFn( comptime n: comptime_int ) fn() void {
+	return struct {
+		fn task() void {
+			for ( 0..10 ) |i| {
+				log.printUnsafe( "{}:{} ", .{ n, i } );
+
+				if ( i < 9 ) {
+					for ( 0..10_000_000 ) |_| {
+					}
+				}
+
+			}
+		}
+	}.task;
 }

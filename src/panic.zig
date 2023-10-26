@@ -151,6 +151,12 @@ pub export fn isrPanic( state: *x86.State ) noreturn {
 				},
 				state.errNum >> 3
 			} )
+		) else if ( state.intNum == 14 ) (
+			std.fmt.bufPrintZ( &errbuf, "Unhandled exception {s} ({}: {x:0>8})", .{
+				MSG_EXCEPTION[state.intNum],
+				state.errNum,
+				asm volatile ( "movl %%cr2, %[out]" : [out] "=r" ( -> u32 ) )
+			} )
 		) else (
 			std.fmt.bufPrintZ( &errbuf, "Unhandled exception {s} ({x}:{x})", .{ MSG_EXCEPTION[state.intNum], state.intNum, state.errNum } )
 		)

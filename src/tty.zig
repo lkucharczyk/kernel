@@ -37,8 +37,8 @@ var color: u16 = 0x0700;
 var softLF: bool = false;
 
 pub fn init() void {
-	gdt.setPort( vga.Register.ControlSelect, true );
-	gdt.setPort( vga.Register.ControlData, true );
+	// gdt.setPort( vga.Register.ControlSelect, true );
+	// gdt.setPort( vga.Register.ControlData, true );
 	vga.setControlReg( vga.ControlRegister.CursorStart, @intFromEnum( Cursor.Thin ) );
 	clear();
 }

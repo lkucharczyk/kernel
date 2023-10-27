@@ -100,8 +100,8 @@ pub const SerialPort = struct {
 		} );
 
 		if ( com.runSelfTest() ) {
-			gdt.setPort( com.address + RegisterOffset.Data, true );
-			gdt.setPort( com.address + RegisterOffset.LineStatus, true );
+			// gdt.setPort( com.address + RegisterOffset.Data, true );
+			// gdt.setPort( com.address + RegisterOffset.LineStatus, true );
 			return com;
 		}
 

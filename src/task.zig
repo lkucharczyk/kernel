@@ -4,11 +4,11 @@ const gdt = @import( "./gdt.zig" );
 const irq = @import( "./irq.zig" );
 const x86 = @import( "./x86.zig" );
 
-var kernelTask: *Task = undefined;
-var currentTask: *Task = undefined;
+pub var kernelTask: *Task = undefined;
+pub var currentTask: *Task = undefined;
 
-const KS = 1024;
-const US = 1024;
+const KS = 2 * 1024;
+const US = 2 * 1024;
 
 const Status = enum {
 	Kernel,
@@ -72,6 +72,19 @@ const Task = struct {
 
 		asm volatile ( "task_end:" );
 	}
+
+	pub fn exit( self: *Task, _: *x86.State, code: u32 ) noreturn {
+		self.status = .Done;
+		root.log.printUnsafe( "\nTask {} exited with code {}.\n", .{ self.id, code } );
+
+		currentTask = self;
+		kernelTask.stackPtr.set();
+		tasks[currentTask.id] = null;
+		currentTask = kernelTask;
+
+		asm volatile ( "jmp task_end" );
+		x86.halt();
+	}
 };
 
 var tasks: [8]?Task = undefined;
@@ -85,8 +98,6 @@ pub fn init() void {
 	for ( 1..tasks.len ) |i| {
 		tasks[i] = null;
 	}
-
-	irq.set( irq.Interrupt.Syscall, exit );
 }
 
 pub fn create( entrypoint: *const fn() void ) void {
@@ -165,14 +176,5 @@ fn scheduler( _: *x86.State ) void {
 
 fn run() void {
 	currentTask.entrypoint();
-	asm volatile ( "int $0x80" );
-}
-
-fn exit( _: *x86.State ) void {
-	kernelTask.stackPtr.set();
-	root.log.printUnsafe( "\nTask {} completed.\n", .{ currentTask.id } );
-	tasks[currentTask.id] = null;
-	currentTask = kernelTask;
-
-	asm volatile ( "jmp task_end" );
+	_ = @import( "./syscall.zig" ).call( .Exit, .{ 0 } );
 }

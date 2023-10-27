@@ -14,7 +14,7 @@ pub const State = extern struct {
 	eax: u32,
 
 	intNum: u32,
-	errNum: u32,
+	errNum: i32,
 
 	eip: u32,
 	cs: u32,

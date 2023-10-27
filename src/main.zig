@@ -3,6 +3,7 @@ const arch = @import( "./x86.zig" );
 const com = @import( "./com.zig" );
 const kbd = @import( "./kbd.zig" );
 const mem = @import( "./mem.zig" );
+const syscall = @import( "./syscall.zig" );
 const task = @import( "./task.zig" );
 const tty = @import( "./tty.zig" );
 const multiboot = @import( "./multiboot.zig" );
@@ -109,6 +110,7 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	kbd.init();
 
 	log.printUnsafe( "\nscheduler:\n", .{} );
+	syscall.init();
 	task.init();
 	inline for ( 1..8 ) |n| {
 		const tfn = taskFn( n );
@@ -134,14 +136,18 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 pub fn taskFn( comptime n: comptime_int ) fn() void {
 	return struct {
 		fn task() void {
+			var buf: [4]u8 = undefined;
+
 			for ( 0..10 ) |i| {
-				log.printUnsafe( "{}:{} ", .{ n, i } );
+				_ = syscall.call( .Write, .{
+					1,
+					std.fmt.bufPrint( &buf, "{}:{} ", .{ n, i } ) catch unreachable
+				} );
 
 				if ( i < 9 ) {
 					for ( 0..10_000_000 ) |_| {
 					}
 				}
-
 			}
 		}
 	}.task;

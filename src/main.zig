@@ -15,6 +15,10 @@ pub var log = MultiWriter { .streams = &logStreams };
 pub const panic = @import( "./panic.zig" ).panic;
 
 pub const os = struct {
+	pub const heap = struct {
+		pub const page_allocator = mem.kheapFba.allocator();
+	};
+
 	pub const system = struct {};
 };
 
@@ -23,7 +27,9 @@ export const mbHeader: multiboot.Header align(4) linksection(".multiboot") = mul
 	.memInfo = true
 } );
 
-export var kstack: [16 * 1024]u8 align(4096) linksection(".bss.kstack") = undefined;
+pub const kheap = mem.kheapGpa.allocator();
+
+export var kstack: [32 * 1024]u8 align(4096) linksection(".bss.kstack") = undefined;
 extern const ADDR_KSTACK_END: u8;
 
 export fn _start() align(16) linksection(".text.boot") callconv(.Naked) noreturn {
@@ -81,6 +87,7 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	);
 
 	mem.pagingDir.entries[0].flags.present = false;
+	asm volatile ( "invlpg (0)" );
 
 	tty.init();
 	logStreams[0] = tty.stream();
@@ -106,15 +113,19 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	}
 
 	@import( "./pit.zig" ).init( 50 );
-	@import( "./pci.zig" ).init();
+	@import( "./pci.zig" ).init() catch unreachable;
 	kbd.init();
+	log.printUnsafe( "\n", .{} );
+
+	@import( "./net.zig" ).init();
+	@import( "./drivers/rtl8139.zig" ).init() catch unreachable;
 
 	log.printUnsafe( "\nscheduler:\n", .{} );
 	syscall.init();
 	task.init();
-	inline for ( 1..8 ) |n| {
+	inline for ( 1..4 ) |n| {
 		const tfn = taskFn( n );
-		task.create( tfn );
+		task.create( tfn, false );
 	}
 	task.schedule();
 

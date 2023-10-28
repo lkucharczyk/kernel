@@ -1,10 +1,13 @@
+const std = @import( "std" );
+
 const ADDR_KMAIN_OFFSET = 0xc000_0000;
 const KMAIN_PAGES = 1;
+const KHEAP_PAGES = 1;
 extern const ADDR_KMAIN_END: u8;
 
 pub const PagingDir = extern struct {
 	const Flags = packed struct(u8) {
-		present: bool = false,
+	    present: bool = false,
 		writeable: bool = false,
 		user: bool = false,
 		writeThrough: bool = false,
@@ -13,7 +16,7 @@ pub const PagingDir = extern struct {
 		accessed: bool = false,
 		/// readonly
 		dirty: bool = false,
-		hugePage: bool = false,
+		hugePage: bool = true,
 	};
 
 	const Entry = packed struct(u32) {
@@ -52,7 +55,16 @@ pub const PagingDir = extern struct {
 	}
 };
 
-pub export var pagingDir: PagingDir align(4096) linksection(".multiboot") = PagingDir.init( KMAIN_PAGES );
+pub export var pagingDir: PagingDir align(4096) linksection(".multiboot") = PagingDir.init( KMAIN_PAGES + KHEAP_PAGES );
+
+pub var kheapFba = std.heap.FixedBufferAllocator.init(
+	@as( [*]u8, @ptrFromInt( ADDR_KMAIN_OFFSET + KMAIN_PAGES * 0x40_0000 ) )[0..( KHEAP_PAGES * 0x40_0000 )]
+);
+pub var kheapGpa = std.heap.GeneralPurposeAllocator( .{
+	.enable_memory_limit = true,
+	.never_unmap = true,
+	.safety = false
+} ) {};
 
 pub fn init() void {
 	@import( "root" ).log.printUnsafe( "mem: {}/{} KB\n\n", .{
@@ -63,4 +75,6 @@ pub fn init() void {
 	if ( @intFromPtr( &ADDR_KMAIN_END ) > ADDR_KMAIN_OFFSET + KMAIN_PAGES * 4 * 1024 * 1024 ) {
 		@panic( "Not enough pages for static kernel memory" );
 	}
+
+	kheapGpa.setRequestedMemoryLimit( KHEAP_PAGES * 0x40_0000 );
 }

@@ -13,7 +13,8 @@ fn getQemu( b: *std.Build, comptime arch: std.Target.Cpu.Arch, comptime debug: b
 			++ " -kernel ./zig-out/bin/kernel.elf"
 			++ " -vga virtio"
 			++ " -device isa-debug-exit"
-			// ++ " -nic tap,id=n0,model=rtl8139,ifname=tap0,script=no,downscript=no"
+			++ " -nic tap,id=n0,model=rtl8139,ifname=tap0,script=no,downscript=no"
+			++ " -nic tap,id=n1,model=rtl8139,ifname=tap1,script=no,downscript=no"
 			++ " -no-reboot -no-shutdown"
 			++ " -d int"
 			++ ( if ( debug ) ( " -s -S" ) else ( " -s" ) )
@@ -33,12 +34,13 @@ pub fn build( b: *std.Build ) !void {
 		.cpu_arch = arch,
 		.cpu_model = .{ .explicit = std.Target.Cpu.Model.generic( .x86 ) },
 		.abi = .none,
-		.os_tag = .freestanding,
+		.os_tag = .freestanding
 	};
 
 	const kernel = b.addExecutable( .{
 		.name = "kernel.elf",
 		.root_source_file = .{ .path = "src/main.zig" },
+		.single_threaded = true,
 		.linkage = .static,
 		.target = target,
 		.optimize = optimize
@@ -58,6 +60,8 @@ pub fn build( b: *std.Build ) !void {
 			++ "| sort"
 			++ "| tee ./zig-cache/symbolmap.txt"
 			++ "| grep -vP '__anon_\\d+|\\d+\\.stub'"
+			++ "| sed -r 's/Allocator\\(\\.\\{[^}]+\\}\\)/Allocator(.{ ... })/'"
+			++ "| tee ./zig-cache/symbolmap-filtered.txt"
 			++ "| LC_CTYPE=c awk '{" ++
 				\\ for ( i = 0; i < 4; ++i ) {
 				\\     printf( "%c", strtonum( "0x" substr( $1, 1 + 2 * i, 2 ) ) );

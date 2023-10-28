@@ -174,18 +174,22 @@ pub const Device = struct {
 		return null;
 	}
 
-	pub fn in( self: Device, comptime T: type, offset: u6 ) T {
+	pub inline fn in( self: Device, comptime T: type, offset: u8 ) T {
 		x86.out( u32, 0xcf8, self.address.register( offset ) );
 		return x86.in( T, 0xcfc );
 	}
 
-	pub fn out( self: Device, comptime T: type, offset: u8, data: T ) void {
+	pub inline fn out( self: Device, comptime T: type, offset: u8, data: T ) void {
 		x86.out( u32, 0xcf8, self.address.register( offset ) );
 		return x86.out( T, 0xcfc, data );
 	}
 };
 
-pub fn init() void {
+pub var devices: std.ArrayList( Device ) = undefined;
+
+pub fn init() std.mem.Allocator.Error!void {
+	devices = try std.ArrayList( Device ).initCapacity( root.kheap, 8 );
+
 	for ( 0..0b1111_1111 ) |bus| {
 		for ( 0..0b11111 ) |slot| {
 			for ( 0..8 ) |func| {
@@ -196,14 +200,19 @@ pub fn init() void {
 				};
 
 				if ( Device.init( address ) ) |dev| {
-					root.log.printUnsafe(
-						"PCI: {} {} {}\n",
-						.{
-							dev.address,
-							dev.header.deviceId,
-							dev.header.classCode
-						}
-					);
+					root.log.printUnsafe( "pci: {} {} {}", .{
+						dev.address,
+						dev.header.deviceId,
+						dev.header.classCode,
+					} );
+
+					if ( dev.headerExt == .ext0 and dev.headerExt.ext0.intPin != 0 ) {
+						root.log.printUnsafe( " (irq: {})", .{ 32 + dev.headerExt.ext0.intLine } );
+					}
+
+					root.log.printUnsafe( "\n", .{} );
+
+					try devices.append( dev );
 
 					if ( func == 0 and !dev.header.multiFunction ) {
 						break;

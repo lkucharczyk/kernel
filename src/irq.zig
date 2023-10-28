@@ -47,7 +47,7 @@ pub fn init() void {
 }
 
 pub fn set( irq: u8, handler: IrqHandler ) void {
-	if ( handlers[irq - 32] != null ) {
+	if ( handlers[irq - 32] != null and handlers[irq - 32] != handler ) {
 		@panic( "IRQ already set" );
 	}
 

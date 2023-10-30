@@ -115,7 +115,7 @@ pub fn panic( msg: []const u8, trace: ?*std.builtin.StackTrace, retAddr: ?usize 
 
 	if ( inPanic ) {
 		root.log.printUnsafe( "\n\n!!! Double panic detected\n{s}\n", .{ msg } );
-		printStack();
+		// printStack();
 		x86.out( u16, 0x0604, 0x2000 );
 		x86.halt();
 	}
@@ -124,10 +124,10 @@ pub fn panic( msg: []const u8, trace: ?*std.builtin.StackTrace, retAddr: ?usize 
 
 	tty.setColor( .Blue, .White );
 	tty.setCursor( .Disabled );
-	if ( @import( "./com.zig" ).ports[0] ) |com| {
+	if ( @import( "./com.zig" ).ports[1] ) |com| {
 		_ = com.write( "\x1b[44m\x1b[97m" );
 	}
-	root.log.printUnsafe( "!!! Kernel panic: {s}\n\nStack trace:\n", .{ msg } );
+	root.log.printUnsafe( "\n!!! Kernel panic: {s}\n\nStack trace:\n", .{ msg } );
 	printStack();
 
 	// QEMU shutdown

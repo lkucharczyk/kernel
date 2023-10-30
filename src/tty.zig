@@ -1,6 +1,7 @@
 const std = @import( "std" );
 const gdt = @import( "./gdt.zig" );
 const vga = @import( "./vga.zig" );
+const vfs = @import( "./vfs.zig" );
 const Stream = @import( "./util/stream.zig" ).Stream;
 
 pub const Color = enum(u4) {
@@ -35,12 +36,16 @@ var row: u16 = 0;
 const rows: u16 = 25;
 var color: u16 = 0x0700;
 var softLF: bool = false;
+var fsNode: vfs.Node = undefined;
 
 pub fn init() void {
 	// gdt.setPort( vga.Register.ControlSelect, true );
 	// gdt.setPort( vga.Register.ControlData, true );
 	vga.setControlReg( vga.ControlRegister.CursorStart, @intFromEnum( Cursor.Thin ) );
 	clear();
+
+	fsNode.init( 1, "tty0", .CharDevice, undefined, .{ .write = &writeFs }  );
+	vfs.devNode.link( &fsNode ) catch unreachable;
 }
 
 pub fn clear() void {
@@ -128,6 +133,10 @@ pub fn write( _: ?*anyopaque, msg: []const u8 ) error{}!usize {
 
 	moveCursor( col, row );
 	return msg.len;
+}
+
+fn writeFs( _: *vfs.Node, _: u32, msg: []const u8 ) u32 {
+	return write( null, msg ) catch unreachable;
 }
 
 pub fn print( comptime fmt: []const u8, args: anytype ) !void {

@@ -2,6 +2,7 @@ const std = @import( "std" );
 const root = @import( "root" );
 const gdt = @import( "./gdt.zig" );
 const irq = @import( "./irq.zig" );
+const vfs = @import( "./vfs.zig" );
 const x86 = @import( "./x86.zig" );
 
 pub var kernelTask: *Task = undefined;
@@ -25,10 +26,16 @@ const Task = struct {
 	stackPtr: x86.StackPtr = undefined,
 	kstack: []align(4096) u8 = undefined,
 	ustack: []align(4096) u8 = undefined,
+	fd: std.ArrayListUnmanaged( ?vfs.FileDescriptor ) = undefined,
 
 	fn init( self: *Task ) std.mem.Allocator.Error!void {
 		self.kstack = try root.kheap.alignedAlloc( u8, 4096, KS );
 		self.ustack = try root.kheap.alignedAlloc( u8, 4096, US );
+
+		self.fd = try std.ArrayListUnmanaged( ?vfs.FileDescriptor ).initCapacity( root.kheap, 3 );
+		self.fd.appendAssumeCapacity( kernelTask.fd.items[0] );
+		self.fd.appendAssumeCapacity( kernelTask.fd.items[1] );
+		self.fd.appendAssumeCapacity( kernelTask.fd.items[2] );
 
 		self.stackPtr = .{
 			.ebp = @intFromPtr( self.kstack.ptr ) + KS - 4,
@@ -83,7 +90,7 @@ const Task = struct {
 		asm volatile ( "task_end:" );
 	}
 
-	pub fn exit( self: *Task, _: *x86.State, code: u32 ) noreturn {
+	pub fn exit( self: *Task, code: u32 ) noreturn {
 		x86.disableInterrupts();
 		self.status = .Done;
 		root.log.printUnsafe( "\nTask {} exited with code {}.\n", .{ self.id, code } );
@@ -102,14 +109,16 @@ var tasks: [8]?Task = undefined;
 var tcc: u3 = 0;
 var tcs: u3 = 0;
 
-pub fn init() void {
+pub fn init() std.mem.Allocator.Error!void {
 	tasks[0] = Task {
 		.id = 0,
 		.status = .Kernel,
 		.kernelMode = true,
-		.entrypoint = undefined
+		.entrypoint = undefined,
+		.fd = try std.ArrayListUnmanaged( ?vfs.FileDescriptor ).initCapacity( root.kheap, 3 )
 	};
 	kernelTask = &tasks[0].?;
+	kernelTask.fd.appendNTimesAssumeCapacity( .{ .node = vfs.devNode.resolve( "com0" ).? }, 3 );
 
 	for ( 1..tasks.len ) |i| {
 		tasks[i] = null;
@@ -147,7 +156,7 @@ pub fn schedule() void {
 		// ticks = @import( "std" ).math.maxInt( @TypeOf( ticks ) );
 		asm volatile ( "int %[irq]" :: [irq] "n" ( irq.Interrupt.Pit ) );
 
-		root.log.printUnsafe( "S ", .{} );
+		// root.log.printUnsafe( "S ", .{} );
 
 		var c: usize = 0;
 		for ( 1..tasks.len ) |i| {
@@ -178,7 +187,7 @@ fn scheduler( _: *x86.State ) void {
 	//	return;
 	// }
 
-	root.log.printUnsafe( "s ", .{} );
+	// root.log.printUnsafe( "s ", .{} );
 	for ( 0..tasks.len ) |_| {
 		tcs +%= 1;
 

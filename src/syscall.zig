@@ -5,39 +5,108 @@ const task = @import( "./task.zig" );
 const x86 = @import( "./x86.zig" );
 
 pub const Syscall = enum(u32) {
+	Read  = 0,
 	Write = 1,
-	Exit  = 60
+	Open  = 2,
+	Close = 3,
+	Exit  = 60,
+	_
 };
 
-fn handler( state: *x86.State ) void {
-	const id: Syscall = @enumFromInt( state.eax );
+fn handlerIrq( state: *x86.State ) void {
+	const id: Syscall = switch ( state.eax ) {
+		1 => Syscall.Exit,
+		3 => Syscall.Read,
+		4 => Syscall.Write,
+		5 => Syscall.Open,
+		6 => Syscall.Close,
+		else => return
+	};
 
-	state.errNum = switch ( id ) {
-		.Write => switch ( state.edi ) {
-			1, 2 => @intCast( @as( u32, @intCast(
-				root.log.write( @as( [*]const u8, @ptrFromInt( state.esi ) )[0..state.edx] )
-					catch unreachable
-			) ) ),
+	state.errNum = @bitCast( handler( id, state.ebx, state.ecx, state.edx, state.esi, state.edi ) );
+}
+
+fn handler( id: Syscall, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize ) isize {
+	_ = arg4;
+	_ = arg3;
+
+	var out: isize = switch ( id ) {
+		// read( fd, bufPtr, bufLen )
+		.Read => _: {
+			if ( task.currentTask.fd.items.len > arg0 ) {
+				if ( task.currentTask.fd.items[arg0] ) |fd| {
+					x86.enableInterrupts();
+					var out: isize = @bitCast( fd.read( @as( [*]u8, @ptrFromInt( arg1 ) )[0..arg2] ) );
+					x86.disableInterrupts();
+
+					break :_ out;
+				}
+			}
+
 			// TODO: set task's errno to EBADF
-			else => -1
+			break :_ -1;
+		},
+		// write( fd, bufPtr, bufLen )
+		.Write => _: {
+			if ( task.currentTask.fd.items.len > arg0 ) {
+				if ( task.currentTask.fd.items[arg0] ) |fd| {
+					break :_ @bitCast( fd.write( @as( [*]u8, @ptrFromInt( arg1 ) )[0..arg2] ) );
+				}
+			}
+
+			// TODO: set task's errno to EBADF
+			break :_ -1;
+		},
+		// open( pathPtr, flags, mode )
+		.Open => _: {
+			const pathPtr = @as( [*:0]const u8, @ptrFromInt( arg0 ) );
+			const path = pathPtr[1..std.mem.indexOfSentinel( u8, 0, pathPtr )];
+
+			if ( @import( "./vfs.zig" ).rootNode.resolveDeep( path ) ) |node| {
+				for ( task.currentTask.fd.items, 0.. ) |*fd, i| {
+					if ( fd.* == null ) {
+						fd.* = .{ .node = node };
+						break :_ @bitCast( i );
+					}
+				}
+
+				( task.currentTask.fd.addOne( root.kheap ) catch unreachable ).* = .{ .node = node };
+				break :_ @bitCast( task.currentTask.fd.items.len - 1 );
+			}
+
+			break :_ -1;
+		},
+		// close( fd )
+		.Close => _: {
+			if ( task.currentTask.fd.items.len > arg0 ) {
+				if ( task.currentTask.fd.items[arg0] != null ) {
+					task.currentTask.fd.items[arg0] = null;
+					break :_ 0;
+				}
+			}
+
+			break :_ -1;
 		},
 		.Exit => {
 			// root.log.printUnsafe(
 			// 	"\nsyscall: task:{} {}( {} )\n",
-			// 	.{ task.currentTask.id, id, state.edi }
+			// 	.{ task.currentTask.id, id, arg0 }
 			// );
-			task.currentTask.exit( state, state.edi );
-		}
+			task.currentTask.exit( arg0 );
+		},
+		else => -1
 	};
 
 	// root.log.printUnsafe(
 	// 	"\nsyscall: task:{} {}( {}, {}, {} ) => {}\n",
-	// 	.{ task.currentTask.id, id, state.edi, state.esi, state.edx, state.errNum }
+	// 	.{ task.currentTask.id, id, arg0, arg1, arg2, out }
 	// );
+
+	return out;
 }
 
 pub fn init() void {
-	irq.set( irq.Interrupt.Syscall, handler );
+	irq.set( irq.Interrupt.Syscall, handlerIrq );
 }
 
 fn argparse( args: anytype ) [3]u32 {
@@ -76,15 +145,27 @@ pub fn call( id: Syscall, args: anytype ) i32 {
 
 	var syscallArgs = argparse( args );
 
-	return asm volatile (
-		\\ int $0x80
-		: [out] "={eax}" ( -> i32 )
-		:
-			[id] "{eax}" ( @intFromEnum( id ) ),
-			[arg0] "{edi}" ( syscallArgs[0] ),
-			[arg1] "{esi}" ( syscallArgs[1] ),
-			[arg2] "{edx}" ( syscallArgs[2] )
-	);
+	return switch ( @import( "builtin" ).cpu.arch ) {
+		.x86 => asm volatile (
+			\\ int $0x80
+			: [out] "={eax}" ( -> i32 )
+			:
+				[id] "{eax}" ( @intFromEnum( id ) ),
+				[arg0] "{ebx}" ( syscallArgs[0] ),
+				[arg1] "{ecx}" ( syscallArgs[1] ),
+				[arg2] "{edx}" ( syscallArgs[2] )
+		),
+		// .x86_64 => asm volatile (
+		// 	\\ syscall
+		// 	: [out] "={eax}" ( -> i32 )
+		// 	:
+		// 		[id] "{eax}" ( @intFromEnum( id ) ),
+		// 		[arg0] "{edi}" ( syscallArgs[0] ),
+		// 		[arg1] "{esi}" ( syscallArgs[1] ),
+		// 		[arg2] "{edx}" ( syscallArgs[2] )
+		// )
+		else => -1
+	};
 }
 
 test "syscall.argparse" {

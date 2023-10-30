@@ -1,6 +1,7 @@
 const std = @import( "std" );
 const root = @import( "root" );
 const gdt = @import( "./gdt.zig" );
+const vfs = @import( "./vfs.zig" );
 const x86 = @import( "./x86.zig" );
 const Stream = @import( "./util/stream.zig" ).Stream;
 
@@ -88,6 +89,7 @@ pub var ports: [8]?SerialPort = .{ null } ** 8;
 
 pub const SerialPort = struct {
 	address: u16,
+	fsNode: vfs.Node = undefined,
 
 	pub fn init( address: u16 ) ?SerialPort {
 		const com = SerialPort { .address = address };
@@ -156,7 +158,7 @@ pub const SerialPort = struct {
 	}
 
 	pub fn read( self: SerialPort, buf: []u8 ) usize {
-		// self.setInterrupts( .{ .dataAvailable = true } );
+		self.setInterrupts( .{ .dataAvailable = true } );
 
 		for ( 0..buf.len ) |i| {
 			while ( !self.getLineStatus().dataReady ) {
@@ -169,7 +171,7 @@ pub const SerialPort = struct {
 			}
 		}
 
-		// self.setInterrupts( .{} );
+		self.setInterrupts( .{} );
 		return buf.len;
 	}
 
@@ -210,6 +212,16 @@ pub const SerialPort = struct {
 		return std.fmt.format( self.writer(), fmt, args ) catch unreachable;
 	}
 
+	pub fn fsRead( self: *vfs.Node, _: u32, buf: []u8 ) u32 {
+		const ctx: *SerialPort = @alignCast( @ptrCast( self.ctx ) );
+		return ctx.read( buf );
+	}
+
+	pub fn fsWrite( self: *vfs.Node, _: u32, buf: []const u8 ) u32 {
+		const ctx: *SerialPort = @alignCast( @ptrCast( self.ctx ) );
+		return ctx.write( buf );
+	}
+
 	pub fn reader( self: SerialPort ) std.io.Reader( SerialPort, error{}, streamRead ) {
 		return .{ .context = self };
 	}
@@ -241,5 +253,13 @@ pub fn init() void {
 	const adresses = @typeInfo( PortAddress );
 	inline for ( adresses.Enum.fields, 0.. ) |f, i| {
 		ports[i] = SerialPort.init( f.value );
+
+		if ( ports[i] ) |*port| {
+			port.fsNode.init( 1, &[4:0]u8{ 'c', 'o', 'm', i + '0' }, .CharDevice, port, .{
+				.read = SerialPort.fsRead,
+				.write = SerialPort.fsWrite
+			}  );
+			vfs.devNode.link( &port.fsNode ) catch unreachable;
+		}
 	}
 }

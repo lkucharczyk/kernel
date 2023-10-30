@@ -68,16 +68,16 @@ pub fn RingBufferExt( comptime S: comptime_int, comptime P: comptime_int ) type 
 
 			if ( self.pos + buf.len < S ) {
 				@memcpy( buf, self.data[self.pos..( self.pos + buf.len )] );
-				@memset( self.data[self.pos..( self.pos + buf.len )], 0 );
+				// @memset( self.data[self.pos..( self.pos + buf.len )], 0 );
 				self.pos += buf.len;
 			} else {
 				var s1: usize = S - self.pos;
 				var s2: usize = buf.len - s1;
 
 				@memcpy( buf[0..s1], self.data[self.pos..S] );
-				@memset( self.data[self.pos..S], 0 );
+				// @memset( self.data[self.pos..S], 0 );
 				@memcpy( buf[s1..buf.len], self.data[0..s2] );
-				@memset( self.data[0..s2], 0 );
+				// @memset( self.data[0..s2], 0 );
 				self.pos = s2;
 			}
 		}

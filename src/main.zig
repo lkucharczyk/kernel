@@ -89,12 +89,14 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	mem.pagingDir.entries[0].flags.present = false;
 	asm volatile ( "invlpg (0)" );
 
+	@import( "./vfs.zig" ).init() catch unreachable;
+
 	tty.init();
 	logStreams[0] = tty.stream();
 
 	com.init();
-	if ( com.ports[0] ) |*com0| {
-		logStreams[1] = com0.stream();
+	if ( com.ports[1] ) |*com1| {
+		logStreams[1] = com1.stream();
 	}
 
 	@import( "./idt.zig" ).init();
@@ -120,46 +122,22 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	@import( "./net.zig" ).init();
 	@import( "./drivers/rtl8139.zig" ).init() catch unreachable;
 
-	log.printUnsafe( "\nscheduler:\n", .{} );
 	syscall.init();
-	task.init();
-	inline for ( 1..4 ) |n| {
-		const tfn = taskFn( n );
-		task.create( tfn, false );
-	}
+	task.init() catch unreachable;
+
+	@import( "./vfs.zig" ).printTree( @import( "./vfs.zig" ).rootNode, 0 );
+
+	task.create( @import( "./shell.zig" ).task( "/dev/com0" ), false );
+	task.create( @import( "./shell.zig" ).task( "/dev/com1" ), false );
+	// task.create( @import( "./shell.zig" ).task( "/dev/tty0" ), true );
 	task.schedule();
 
-	log.printUnsafe( "\n\nkbd input:\n", .{} );
+	log.printUnsafe( "\nkbd input:\n", .{} );
 	var buf: [1]u8 = .{ 0 };
 	while ( ( kbd.read( null, &buf ) catch unreachable ) > 0 ) {
 		_ = log.write( &buf ) catch unreachable;
 	}
-	// if ( com.ports[0] ) |com0| {
-	// 	while ( com0.read( &buf ) > 0 ) {
-	// 		_ = log.write( &buf ) catch unreachable;
-	// 	}
-	// }
 
 	// arch.halt();
 	@panic( "kmain end" );
-}
-
-pub fn taskFn( comptime n: comptime_int ) fn() void {
-	return struct {
-		fn task() void {
-			var buf: [4]u8 = undefined;
-
-			for ( 0..10 ) |i| {
-				_ = syscall.call( .Write, .{
-					1,
-					std.fmt.bufPrint( &buf, "{}:{} ", .{ n, i } ) catch unreachable
-				} );
-
-				if ( i < 9 ) {
-					for ( 0..10_000_000 ) |_| {
-					}
-				}
-			}
-		}
-	}.task;
 }

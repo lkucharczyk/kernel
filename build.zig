@@ -13,6 +13,8 @@ fn getQemu( b: *std.Build, comptime arch: std.Target.Cpu.Arch, comptime debug: b
 			++ " -kernel ./zig-out/bin/kernel.elf"
 			++ " -vga virtio"
 			++ " -device isa-debug-exit"
+			++ " -serial vc"
+			++ " -serial vc"
 			++ " -nic tap,id=n0,model=rtl8139,ifname=tap0,script=no,downscript=no"
 			++ " -nic tap,id=n1,model=rtl8139,ifname=tap1,script=no,downscript=no"
 			++ " -no-reboot -no-shutdown"

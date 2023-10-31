@@ -55,20 +55,7 @@ pub const Header = extern struct {
 	}
 };
 
-pub const Body = extern union {
-	arp: *@import( "./arp.zig" ).Packet,
-	raw: extern struct {
-		ptr: [*]u8,
-		len: usize,
-
-		pub fn asPtr( self: @This() ) []u8 {
-			var out: []u8 = undefined;
-			out.ptr = self.ptr;
-			out.len = self.len;
-			return out;
-		}
-	}
-};
+pub const Body = @import( "./util.zig" ).HwBody;
 
 pub const Frame = struct {
 	pub const MIN_LENGTH = 0x040;
@@ -78,11 +65,7 @@ pub const Frame = struct {
 	body: Body,
 
 	pub fn len( self: Frame ) usize {
-		const out: usize = @sizeOf( Header ) + switch ( self.header.protocol ) {
-			.Arp => self.body.arp.len(),
-			// .ipv4 => |b| b.len(),
-			else => self.body.raw.len
-		};
+		var out: usize = @sizeOf( Header ) + self.body.len();
 
 		std.debug.assert( out <= MAX_LENGTH );
 		return @truncate( out );
@@ -92,13 +75,13 @@ pub const Frame = struct {
 		dest.header = self.header;
 		dest.len = self.len();
 
-		const blen = dest.len - @sizeOf( Header );
-		@memcpy( dest.body[0..blen], self.body.raw.ptr[0..blen] );
+		self.body.copyTo( &dest.body );
 
-		if ( dest.len < Frame.MIN_LENGTH ) {
-			@memset( dest.body[blen..Frame.MIN_LENGTH - @sizeOf( Header )], 0 );
-			dest.len = Frame.MIN_LENGTH;
-		}
+		// const blen = dest.len - @sizeOf( Header );
+		// if ( dest.len < Frame.MIN_LENGTH ) {
+		// 	@memset( dest.body[blen..Frame.MIN_LENGTH - @sizeOf( Header )], 0 );
+		// 	dest.len = Frame.MIN_LENGTH;
+		// }
 	}
 };
 

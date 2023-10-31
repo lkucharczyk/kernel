@@ -1,6 +1,7 @@
 const std = @import( "std" );
 const ethernet = @import( "./ethernet.zig" );
 const ipv4 = @import( "./ipv4.zig" );
+const netUtil = @import( "./util.zig" );
 
 const isLe = @import( "builtin" ).cpu.arch.endian() == .Little;
 
@@ -77,6 +78,10 @@ pub const Packet = extern struct {
 		return @sizeOf( Header ) + self.header.hwAddrLen * 2 + self.header.protoAddrLen * 2;
 	}
 
+	pub inline fn toHwBody( self: *const Packet ) netUtil.HwBody {
+		return netUtil.HwBody.init( @as( [*]const u8, @ptrCast( self ) )[0..self.len()] );
+	}
+
 	pub fn format( self: Packet, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) !void {
 		try std.fmt.format( writer, "{s}{{ {}, ", .{ @typeName( Packet ), self.header } );
 		switch ( self.header.hwType ) {
@@ -86,6 +91,6 @@ pub const Packet = extern struct {
 			},
 			else => try std.fmt.format( writer, "{}", .{ self.body } ),
 		}
-		try std.fmt.format( writer, "}}", .{} );
+		try std.fmt.format( writer, " }}", .{} );
 	}
 };

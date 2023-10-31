@@ -306,10 +306,10 @@ const Rtl8139 = struct {
 		while ( !self.inT( Command ).bufferEmpty ) {
 			var dataHeader = self.rxBuffer.read( DataHeader );
 			if ( dataHeader.isValid() ) {
-				var buf = root.kheap.alloc( u8, dataHeader.len - @sizeOf( ethernet.Header ) - 4 ) catch unreachable;
+				var buf = self.interface.allocator.alloc( u8, dataHeader.len - @sizeOf( ethernet.Header ) - 4 ) catch unreachable;
 				var frame: ethernet.Frame = .{
 					.header = self.rxBuffer.read( ethernet.Header ),
-					.body = .{ .raw = .{ .ptr = buf.ptr, .len = buf.len } }
+					.body = ethernet.Body.init( buf )
 				};
 
 				self.rxBuffer.readBytes( buf );

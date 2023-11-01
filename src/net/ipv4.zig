@@ -1,4 +1,5 @@
 const std = @import( "std" );
+const net = @import( "../net.zig" );
 const netUtil = @import( "./util.zig" );
 
 pub const Address = packed struct(u32) {
@@ -20,6 +21,48 @@ pub const Address = packed struct(u32) {
 			( self.val >>  8 ) & 0xff,
 			( self.val >> 16 ) & 0xff,
 			( self.val >> 24 ) & 0xff
+		} );
+	}
+};
+
+pub const Mask = packed struct(u32) {
+	val: u32,
+
+	pub fn init( val: u6 ) Mask {
+		if ( val == 32 ) {
+			return .{ .val = std.math.maxInt( u32 ) };
+		} else {
+			return .{ .val = @byteSwap(
+				@as( u32, std.math.maxInt( u32 ) ) << @as( u5, @truncate( 32 - val ) )
+			) };
+		}
+	}
+
+	pub fn format( self: Mask, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) !void {
+		var i: u32 = 0;
+		for ( 0..32 ) |j| {
+			i += ( self.val >> @as( u5, @truncate( j ) ) ) & 1;
+		}
+
+		try std.fmt.format( writer, "/{}", .{ i } );
+	}
+};
+
+pub const Route = struct {
+	dstNetwork: Address,
+	dstMask: Mask,
+	srcAddress: Address,
+
+	pub fn match( self: Route, dstAddress: Address ) bool {
+		return ( self.dstNetwork.val & self.dstMask.val ) == ( dstAddress.val & self.dstMask.val );
+	}
+
+	pub fn format( self: Route, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) !void {
+		try std.fmt.format( writer, "{s}{{ {}{} (src: {}) }}", .{
+			@typeName( Route ),
+			self.dstNetwork,
+			self.dstMask,
+			self.srcAddress
 		} );
 	}
 };
@@ -94,3 +137,62 @@ pub const Packet = struct {
 		};
 	}
 };
+
+pub fn recv( _: *net.Interface, data: []const u8 ) ?net.EntryL4 {
+	if ( data.len < @sizeOf( Header ) ) {
+		return null;
+	}
+
+	const header: *const align(1) Header = @ptrCast( data );
+	if ( netUtil.hton( u16, header.len ) <= data.len ) {
+		return net.EntryL4 {
+			.protocol = header.protocol,
+			.data = data[@sizeOf( Header )..],
+			.sockaddr = .{
+				.ipv4 = .{
+					.address = header.srcAddr,
+					.port = 0
+				}
+			}
+		};
+	}
+
+	return null;
+}
+
+pub fn send( protocol: Protocol, sockaddr: @import( "./sockaddr.zig" ).Ipv4, body: netUtil.NetBody ) void {
+	// TODO: add proper routing
+	var interface = net.interfaces.items[1];
+	var packet = Packet {
+		.header = .{
+			.protocol = protocol,
+			.srcAddr = interface.ipv4Addr.?,
+			.dstAddr = sockaddr.address
+		},
+		.body = body
+	};
+
+	packet.hton();
+
+	// TODO: add ARP resolution
+	interface.send(
+		net.ethernet.Address.Broadcast,
+		net.ethernet.EtherType.Ipv4,
+		packet.toHwBody()
+	);
+}
+
+test "net.ipv4.Route.match" {
+	var route = Route {
+		.dstNetwork = Address.init( .{ 192, 168, 10, 0 } ),
+		.dstMask = Mask.init( 23 ),
+		.srcAddress = Address.init( .{ 192, 168, 10, 1 } )
+	};
+
+	std.debug.print( "{}\n", .{ route } );
+
+	try std.testing.expectEqual( false, route.match( Address.init( .{ 192, 168, 9, 10 } ) ) );
+	try std.testing.expectEqual( true, route.match( Address.init( .{ 192, 168, 10, 10 } ) ) );
+	try std.testing.expectEqual( true, route.match( Address.init( .{ 192, 168, 11, 10 } ) ) );
+	try std.testing.expectEqual( false, route.match( Address.init( .{ 192, 168, 12, 10 } ) ) );
+}

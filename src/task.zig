@@ -9,16 +9,17 @@ pub var kernelTask: *Task = undefined;
 pub var currentTask: *Task = undefined;
 
 const KS = 32 * 1024;
-const US = 2 * 1024;
+const US = 32 * 1024;
 
 const Status = enum {
 	Kernel,
 	Start,
+	Wait,
 	Active,
 	Done
 };
 
-const Task = struct {
+pub const Task = struct {
 	id: u8,
 	status: Status,
 	kernelMode: bool,
@@ -90,6 +91,13 @@ const Task = struct {
 		asm volatile ( "task_end:" );
 	}
 
+	pub fn park( self: *Task ) void {
+		self.status = .Wait;
+		if ( currentTask == self ) {
+			asm volatile ( "int $0x20" );
+		}
+	}
+
 	pub fn exit( self: *Task, code: u32 ) noreturn {
 		x86.disableInterrupts();
 		self.status = .Done;
@@ -125,7 +133,7 @@ pub fn init() std.mem.Allocator.Error!void {
 	}
 }
 
-pub fn create( entrypoint: *const fn() void, kernelMode: bool ) void {
+pub fn create( entrypoint: *const fn() void, kernelMode: bool ) *Task {
 	for ( 0..tasks.len ) |_| {
 		tcc +%= 1;
 
@@ -140,7 +148,7 @@ pub fn create( entrypoint: *const fn() void, kernelMode: bool ) void {
 			tasks[tcc].?.init() catch unreachable;
 			x86.enableInterrupts();
 
-			return;
+			return &( tasks[tcc].? );
 		}
 	}
 

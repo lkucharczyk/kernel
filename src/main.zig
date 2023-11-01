@@ -114,21 +114,21 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 		log.printUnsafe( "rsdp: {*}\n{}\n\n", .{ rsdp, rsdp } );
 	}
 
-	@import( "./pit.zig" ).init( 50 );
+	@import( "./pit.zig" ).init( 100 );
 	@import( "./pci.zig" ).init() catch unreachable;
 	kbd.init();
 	log.printUnsafe( "\n", .{} );
 
-	@import( "./net.zig" ).init();
-	@import( "./drivers/rtl8139.zig" ).init() catch unreachable;
-
 	syscall.init();
 	task.init() catch unreachable;
 
+	@import( "./net.zig" ).init() catch unreachable;
+	@import( "./drivers/rtl8139.zig" ).init() catch unreachable;
+
 	@import( "./vfs.zig" ).printTree( @import( "./vfs.zig" ).rootNode, 0 );
 
-	task.create( @import( "./shell.zig" ).task( "/dev/com0" ), false );
-	task.create( @import( "./shell.zig" ).task( "/dev/com1" ), false );
+	_ = task.create( @import( "./shell.zig" ).task( "/dev/com0" ), false );
+	_ = task.create( @import( "./shell.zig" ).task( "/dev/com1" ), false );
 	// task.create( @import( "./shell.zig" ).task( "/dev/tty0" ), true );
 	task.schedule();
 

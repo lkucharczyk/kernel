@@ -278,6 +278,7 @@ const Rtl8139 = struct {
 
 			bufFrame.header.src = self.macAddr;
 
+			x86.disableInterrupts();
 			self.out( u32, RegisterOffset.TxAddress[i], @intFromPtr( bufFrame ) - 0xc000_0000 );
 			self.out( TxStatus, RegisterOffset.TxStatus[i], .{
 				.length = @truncate( bufFrame.len ),
@@ -290,6 +291,7 @@ const Rtl8139 = struct {
 
 			_ = self.txBuffer.pop();
 			self.outT( InterruptStatus { .txOk = true } );
+			x86.enableInterrupts();
 		} else {
 			@panic( "rtl8139 tx buffer full" );
 		}
@@ -297,37 +299,49 @@ const Rtl8139 = struct {
 
 	fn irqHandler( self: *Rtl8139 ) void {
 		var status = self.inT( InterruptStatus );
-		if ( status.isEmpty() ) {
-			return;
-		}
+		var i: usize = 8;
 
-		self.outT( status );
+		while ( !status.isEmpty() and i > 0 ) : ( status = self.inT( InterruptStatus ) ) {
+			self.outT( status );
 
-		while ( !self.inT( Command ).bufferEmpty ) {
-			var dataHeader = self.rxBuffer.read( DataHeader );
-			if ( dataHeader.isValid() ) {
-				var buf = self.interface.allocator.alloc( u8, dataHeader.len - @sizeOf( ethernet.Header ) - 4 ) catch unreachable;
-				var frame: ethernet.Frame = .{
-					.header = self.rxBuffer.read( ethernet.Header ),
-					.body = ethernet.Body.init( buf )
-				};
-
-				self.rxBuffer.readBytes( buf );
-				self.rxBuffer.seek( 4 + 3 );
-				self.rxBuffer.pos &= ~@as( u32, 3 );
-				self.out( u16, RegisterOffset.CurrentAddressPacketRead, @truncate( self.rxBuffer.pos -| 0x10 ) );
-
-				self.interface.recv( frame );
-			} else {
-				self.rxBuffer.seek( -@sizeOf( DataHeader ) );
-				break;
+			if ( status.rxBufferOverflow ) {
+				self.rxBuffer.pos = ( self.in( u16, RegisterOffset.CurrentBufferAddress ) % 8192 );
+				self.out( u16, RegisterOffset.CurrentAddressPacketRead, @truncate( self.rxBuffer.pos -% 0x10 ) );
+				self.outT( InterruptStatus { .rxOk = true } );
 			}
-		}
 
-		if ( status.rxBufferOverflow ) {
-			self.rxBuffer.pos = self.in( u16, RegisterOffset.CurrentBufferAddress ) % 8192;
-			self.out( u16, RegisterOffset.CurrentAddressPacketRead, @truncate( self.rxBuffer.pos -| 0x10 ) );
-			self.outT( InterruptStatus { .rxOk = true } );
+			while ( status.rxOk and !self.inT( Command ).bufferEmpty ) {
+				var dataHeader = self.rxBuffer.read( DataHeader );
+				if ( dataHeader.isValid() ) {
+					if ( self.interface.recv() ) |frame| {
+						frame.header = self.rxBuffer.read( ethernet.Header );
+						var mbuf: ?[]u8 = self.interface.allocator.alloc( u8, dataHeader.len - @sizeOf( ethernet.Header ) - 4 ) catch null;
+
+						if ( mbuf ) |buf| {
+							frame.body = ethernet.Body.init( buf );
+
+							self.rxBuffer.readBytes( buf );
+							self.rxBuffer.seek( 4 + 3 );
+							self.rxBuffer.pos &= ~@as( u32, 3 );
+						} else {
+							frame.body = ethernet.Body.init( "" );
+							self.rxBuffer.seek( dataHeader.len - @sizeOf( ethernet.Header ) + 3 );
+							self.rxBuffer.pos &= ~@as( u32, 3 );
+							root.log.printUnsafe( "Driver dropped frame!\n", .{} );
+						}
+					} else {
+						self.rxBuffer.seek( dataHeader.len - @sizeOf( ethernet.Header ) + 3 );
+						self.rxBuffer.pos &= ~@as( u32, 3 );
+					}
+
+					self.out( u16, RegisterOffset.CurrentAddressPacketRead, @truncate( self.rxBuffer.pos -% 0x10 ) );
+				} else {
+					self.rxBuffer.seek( -@sizeOf( DataHeader ) );
+					break;
+				}
+			}
+
+			i -= 1;
 		}
 	}
 

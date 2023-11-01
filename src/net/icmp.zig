@@ -1,4 +1,6 @@
 const std = @import( "std" );
+const root = @import( "root" );
+const net = @import( "../net.zig" );
 const netUtil = @import( "./util.zig" );
 
 pub const Type = enum(u8) {
@@ -52,3 +54,26 @@ pub const Datagram = struct {
 		};
 	}
 };
+
+pub fn recv( entry: net.EntryL4 ) void {
+	if ( entry.data.len < @sizeOf( Header ) ) {
+		return;
+	}
+
+	const header: *const align( 1 ) Header = @ptrCast( entry.data );
+	const body: Body = entry.data[@sizeOf( Header )..];
+
+	if ( header.dtype == .EchoRequest and header.subtype == 0 ) {
+		root.log.printUnsafe( "ping req: {}\n", .{ entry.sockaddr } );
+
+		var response = Datagram {
+			.header = .{
+				.dtype = .EchoReply,
+				.data = .{ .raw = header.data.raw }
+			},
+			.body = body
+		};
+
+		net.send( .Icmp, entry.sockaddr, response.toNetBody() );
+	}
+}

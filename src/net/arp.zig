@@ -1,6 +1,8 @@
 const std = @import( "std" );
+const root = @import( "root" );
 const ethernet = @import( "./ethernet.zig" );
 const ipv4 = @import( "./ipv4.zig" );
+const net = @import( "../net.zig" );
 const netUtil = @import( "./util.zig" );
 
 const isLe = @import( "builtin" ).cpu.arch.endian() == .Little;
@@ -94,3 +96,38 @@ pub const Packet = extern struct {
 		try std.fmt.format( writer, " }}", .{} );
 	}
 };
+
+pub fn recv( interface: *net.Interface, data: []const u8 ) ?net.EntryL4 {
+	if ( data.len < @sizeOf( Packet ) ) {
+		return null;
+	}
+
+	const packet: *const align(1) Packet = @ptrCast( data );
+
+	if (
+		data.len >= packet.len()
+		and packet.header.opCode == .Request
+		and packet.header.hwType == .Ethernet
+		and packet.header.proto == .Ipv4
+		and interface.ipv4Addr != null
+		and interface.ipv4Addr.?.val == packet.body.eth_ipv4.dstProtoAddr.val
+	) {
+		root.log.printUnsafe( "arp req: {}\n", .{ packet } );
+
+		var response = Packet {
+			.header = .{ .opCode = .Response },
+			.body = .{
+				.eth_ipv4 = .{
+					.srcHwAddr = interface.device.hwAddr,
+					.dstHwAddr = packet.body.eth_ipv4.srcHwAddr,
+					.srcProtoAddr = interface.ipv4Addr.?,
+					.dstProtoAddr = packet.body.eth_ipv4.srcProtoAddr
+				}
+			}
+		};
+
+		interface.send( packet.body.eth_ipv4.srcHwAddr, .Arp, response.toHwBody() );
+	}
+
+	return null;
+}

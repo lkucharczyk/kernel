@@ -5,11 +5,13 @@ const task = @import( "./task.zig" );
 const x86 = @import( "./x86.zig" );
 
 pub const Syscall = enum(u32) {
-	Read  = 0,
-	Write = 1,
-	Open  = 2,
-	Close = 3,
-	Exit  = 60,
+	Read   = 0,
+	Write  = 1,
+	Open   = 2,
+	Close  = 3,
+	Socket = 41,
+	SendTo = 44,
+	Exit   = 60,
 	_
 };
 
@@ -20,15 +22,41 @@ fn handlerIrq( state: *x86.State ) void {
 		4 => Syscall.Write,
 		5 => Syscall.Open,
 		6 => Syscall.Close,
+		102 => _: {
+			var args: [*]u32 = @ptrFromInt( state.ecx );
+
+			break :_ switch ( state.ebx ) {
+				1 => {
+					state.ebx = args[0];
+					state.ecx = args[1];
+					state.edx = args[2];
+					break :_ Syscall.Socket;
+				},
+				11 => {
+					state.ebx = args[0];
+					state.ecx = args[1];
+					state.edx = args[2];
+					state.esi = args[3];
+					state.edi = args[4];
+					state.ebp = args[5];
+					break :_ Syscall.SendTo;
+				},
+				else => return
+			};
+		},
+		359 => Syscall.Socket,
+		369 => Syscall.SendTo,
 		else => return
 	};
 
-	state.errNum = @bitCast( handler( id, state.ebx, state.ecx, state.edx, state.esi, state.edi ) );
+	state.errNum = @bitCast( handler( id, state.ebx, state.ecx, state.edx, state.esi, state.edi, state.ebp ) );
 }
 
-fn handler( id: Syscall, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize ) isize {
-	_ = arg4;
-	_ = arg3;
+fn handler( id: Syscall, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize ) isize {
+
+	if ( id != .Read and id != .Write ) {
+		root.log.printUnsafe( "syscall: task:{} {}(", .{ task.currentTask.id, id } );
+	}
 
 	var out: isize = switch ( id ) {
 		// read( fd, bufPtr, bufLen )
@@ -59,6 +87,8 @@ fn handler( id: Syscall, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg
 		},
 		// open( pathPtr, flags, mode )
 		.Open => _: {
+			root.log.printUnsafe( " {}, {}, {} ", .{ arg0, arg1, arg2 } );
+
 			const pathPtr = @as( [*:0]const u8, @ptrFromInt( arg0 ) );
 			const path = pathPtr[1..std.mem.indexOfSentinel( u8, 0, pathPtr )];
 
@@ -78,8 +108,11 @@ fn handler( id: Syscall, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg
 		},
 		// close( fd )
 		.Close => _: {
+			root.log.printUnsafe( " {} ", .{ arg0 } );
+
 			if ( task.currentTask.fd.items.len > arg0 ) {
 				if ( task.currentTask.fd.items[arg0] != null ) {
+					task.currentTask.fd.items[arg0].?.node.close();
 					task.currentTask.fd.items[arg0] = null;
 					break :_ 0;
 				}
@@ -87,7 +120,50 @@ fn handler( id: Syscall, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg
 
 			break :_ -1;
 		},
+		// socket( family, type, protocol )
+		.Socket => _: {
+			root.log.printUnsafe( " {}, {}, {} ", .{ arg0, arg1, arg2 } );
+
+			var node = @import( "./net.zig" ).createSocket();
+
+			for ( task.currentTask.fd.items, 0.. ) |*fd, i| {
+				if ( fd.* == null ) {
+					fd.* = .{ .node = node };
+					break :_ @bitCast( i );
+				}
+			}
+
+			( task.currentTask.fd.addOne( root.kheap ) catch unreachable ).* = .{ .node = node };
+			break :_ @bitCast( task.currentTask.fd.items.len - 1 );
+		},
+		// sendto( fd, bufPtr, bufLen, flags, sockaddrPtr, sockaddrLen )
+		.SendTo => _: {
+			var buf = @as( [*]u8, @ptrFromInt( arg1 ) )[0..arg2];
+			var sockaddr: @import( "./net/sockaddr.zig" ).Sockaddr = undefined;
+
+			const mlen = @min( @sizeOf( @import( "./net/sockaddr.zig" ).Sockaddr ), arg5 );
+			@memcpy(
+				@as( [*]u8, @ptrCast( &sockaddr ) )[0..mlen],
+				@as( [*]u8, @ptrFromInt( arg4 ) )[0..mlen]
+			);
+
+			root.log.printUnsafe( " {}, \"{s}\", {}, {} ", .{ arg0, buf, arg3, sockaddr } );
+
+			if ( task.currentTask.fd.items.len > arg0 ) {
+				if ( task.currentTask.fd.items[arg0] ) |fd| {
+					if ( fd.node.ntype == .Socket ) {
+						var socket: *@import( "./net/socket.zig" ).Socket = @alignCast( @ptrCast( fd.node.ctx ) );
+
+						break :_ socket.sendto( sockaddr, buf );
+					}
+				}
+			}
+
+			// TODO: set task's errno to EBADF
+			break :_ -1;
+		},
 		.Exit => {
+			root.log.printUnsafe( " {} ) => noreturn", .{ arg0 } );
 			// root.log.printUnsafe(
 			// 	"\nsyscall: task:{} {}( {} )\n",
 			// 	.{ task.currentTask.id, id, arg0 }
@@ -97,10 +173,14 @@ fn handler( id: Syscall, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg
 		else => -1
 	};
 
-	// root.log.printUnsafe(
-	// 	"\nsyscall: task:{} {}( {}, {}, {} ) => {}\n",
-	// 	.{ task.currentTask.id, id, arg0, arg1, arg2, out }
-	// );
+	if ( id != .Read and id != .Write ) {
+		// root.log.printUnsafe(
+		//	"syscall: task:{} {}( {}, {}, {}, {}, {}, {} ) => {}\n",
+		//	.{ task.currentTask.id, id, arg0, arg1, arg2, arg3, arg4, arg5, out }
+		// );
+
+		root.log.printUnsafe( ") => {}\n", .{ out } );
+	}
 
 	return out;
 }

@@ -21,7 +21,7 @@ fn getQemu( b: *std.Build, comptime arch: std.Target.Cpu.Arch, comptime debug: b
 			++ " -d int"
 			++ ( if ( debug ) ( " -s -S" ) else ( " -s" ) )
 			++ " 2>&1"
-			++ "| grep -A1 ^check_exception"
+			++ "| grep -A10 ^check_exception"
 	} );
 
 	return qemu;

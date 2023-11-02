@@ -1,6 +1,7 @@
 const std = @import( "std" );
 const root = @import( "root" );
 const task = @import( "./task.zig" );
+const vfs = @import( "./vfs.zig" );
 const x86 = @import( "./x86.zig" );
 
 pub const ethernet = @import( "./net/ethernet.zig" );
@@ -10,6 +11,7 @@ pub const util = @import( "./net/util.zig" );
 
 pub const Device = @import( "./net/device.zig" ).Device;
 pub const Interface = @import( "./net/interface.zig" ).Interface;
+pub const Socket = @import( "./net/socket.zig" ).Socket;
 pub const Sockaddr = @import( "./net/sockaddr.zig" ).Sockaddr;
 
 pub const EntryL4 = struct {
@@ -19,6 +21,7 @@ pub const EntryL4 = struct {
 };
 
 pub var interfaces = std.ArrayListUnmanaged( Interface ) {};
+pub var sockets: std.heap.MemoryPoolExtra( Socket, .{} ) = undefined;
 pub var netTask: *task.Task = undefined;
 
 var loEthernet: loopback.Ethernet = undefined;
@@ -32,7 +35,21 @@ pub fn createInterface( device: Device ) *Interface {
 	return ptr;
 }
 
+pub fn createSocket() *vfs.Node {
+	var ptr = sockets.create() catch unreachable;
+	ptr.family = .Ipv4;
+	ptr.protocol = .Udp;
+	ptr.stype = std.os.linux.SOCK.DGRAM;
+	ptr.init();
+	return &ptr.node;
+}
+
+pub fn destroySocket( socket: *Socket ) void {
+	sockets.destroy( socket );
+}
+
 pub fn init() std.mem.Allocator.Error!void {
+	sockets = std.heap.MemoryPoolExtra( Socket, .{} ).init( root.kheap );
 	loEthernet.init();
 	netTask = task.create( daemon, true );
 }
@@ -64,6 +81,7 @@ pub fn recv( interface: *Interface, etherType: ethernet.EtherType, data: []const
 		switch ( etherType ) {
 			.Arp => @import( "./net/arp.zig" ).recv( interface, data ),
 			.Ipv4 => ipv4.recv( interface, data ),
+			.Ipv6 => return,
 			else => {
 				root.log.printUnsafe( "[net.recv] Unsupported EtherType: {}\n", .{ etherType } );
 				return;

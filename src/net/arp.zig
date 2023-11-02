@@ -5,7 +5,7 @@ const ipv4 = @import( "./ipv4.zig" );
 const net = @import( "../net.zig" );
 const netUtil = @import( "./util.zig" );
 
-const isLe = @import( "builtin" ).cpu.arch.endian() == .Little;
+const isLe = @import( "builtin" ).cpu.arch.endian() == .little;
 
 pub const HwType = enum(u16) {
 	Ethernet = if ( isLe ) ( 0x0100 ) else ( 0x0001 ),

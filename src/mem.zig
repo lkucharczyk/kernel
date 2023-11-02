@@ -62,7 +62,6 @@ pub var kheapFba = std.heap.FixedBufferAllocator.init(
 );
 pub var kheapGpa = std.heap.GeneralPurposeAllocator( .{
 	.enable_memory_limit = true,
-	.never_unmap = true,
 	.safety = false
 } ) {};
 

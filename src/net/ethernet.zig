@@ -1,6 +1,6 @@
 const std = @import( "std" );
 
-const isLe = @import( "builtin" ).cpu.arch.endian() == .Little;
+const isLe = @import( "builtin" ).cpu.arch.endian() == .little;
 
 pub const EtherType = enum(u16) {
 	Ipv4 = if ( isLe ) ( 0x0008 ) else ( 0x0800 ),

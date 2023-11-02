@@ -1,4 +1,4 @@
-const isLe = @import( "builtin" ).cpu.arch.endian() == .Little;
+const isLe = @import( "builtin" ).cpu.arch.endian() == .little;
 
 pub fn Body( comptime N: comptime_int ) type {
 	return struct {

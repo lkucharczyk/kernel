@@ -160,6 +160,7 @@ pub fn recv( _: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 	return null;
 }
 
+var sendId: u16 = 0;
 pub fn send( protocol: Protocol, sockaddr: @import( "./sockaddr.zig" ).Ipv4, body: netUtil.NetBody ) void {
 	// TODO: add proper routing
 	var interface = net.interfaces.items[1];
@@ -167,11 +168,13 @@ pub fn send( protocol: Protocol, sockaddr: @import( "./sockaddr.zig" ).Ipv4, bod
 		.header = .{
 			.protocol = protocol,
 			.srcAddr = interface.ipv4Addr.?,
-			.dstAddr = sockaddr.address
+			.dstAddr = sockaddr.address,
+			.id = sendId
 		},
 		.body = body
 	};
 
+	sendId +%= 1;
 	packet.hton();
 
 	// TODO: add ARP resolution

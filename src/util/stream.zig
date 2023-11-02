@@ -9,7 +9,7 @@ pub const Stream = struct {
 	context: ?*anyopaque,
 	vtable: VTable,
 
-	pub fn read( self: *Stream, buf: []u8 ) anyerror!usize {
+	pub inline fn read( self: *Stream, buf: []u8 ) anyerror!usize {
 		if ( self.vtable.read ) |fnRead| {
 			return try fnRead( self.context, buf );
 		}
@@ -25,15 +25,15 @@ pub const Stream = struct {
 		return buf.len;
 	}
 
-	pub fn print( self: *Stream, comptime fmt: []const u8, args: anytype ) anyerror!void {
+	pub inline fn print( self: *Stream, comptime fmt: []const u8, args: anytype ) anyerror!void {
 		try std.fmt.format( self.writer(), fmt, args );
 	}
 
-	pub fn printUnsafe( self: *Stream, comptime fmt: []const u8, args: anytype ) void {
+	pub inline fn printUnsafe( self: *Stream, comptime fmt: []const u8, args: anytype ) void {
 		std.fmt.format( self.writer(), fmt, args ) catch unreachable;
 	}
 
-	pub fn writer( self: *Stream ) std.io.Writer( *Stream, anyerror, write ) {
+	pub inline fn writer( self: *Stream ) std.io.Writer( *Stream, anyerror, write ) {
 		return .{ .context = self };
 	}
 };
@@ -53,15 +53,15 @@ pub const MultiWriter = struct {
 		return buf.len;
 	}
 
-	pub fn print( self: *MultiWriter, comptime fmt: []const u8, args: anytype ) anyerror!void {
+	pub inline fn print( self: *MultiWriter, comptime fmt: []const u8, args: anytype ) anyerror!void {
 		try std.fmt.format( self.writer(), fmt, args );
 	}
 
-	pub fn printUnsafe( self: *MultiWriter, comptime fmt: []const u8, args: anytype ) void {
+	pub inline fn printUnsafe( self: *MultiWriter, comptime fmt: []const u8, args: anytype ) void {
 		std.fmt.format( self.writer(), fmt, args ) catch unreachable;
 	}
 
-	pub fn writer( self: *MultiWriter ) std.io.Writer( *MultiWriter, anyerror, write ) {
+	pub inline fn writer( self: *MultiWriter ) std.io.Writer( *MultiWriter, anyerror, write ) {
 		return .{ .context = self };
 	}
 };

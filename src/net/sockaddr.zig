@@ -1,4 +1,5 @@
 const std = @import( "std" );
+const netUtil = @import( "./util.zig" );
 
 pub const Family = enum(u16) {
 	Unspecified =  0,
@@ -27,7 +28,7 @@ pub const Ipv4 = extern struct {
 	address: @import( "./ipv4.zig" ).Address,
 
 	pub fn format( self: Ipv4, _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
-		try std.fmt.format( writer, "{s}{{ {}:{} }}", .{ @typeName( Ipv4 ), self.address, self.port } );
+		try std.fmt.format( writer, "{s}{{ {}:{} }}", .{ @typeName( Ipv4 ), self.address, netUtil.hton( u16, self.port ) } );
 	}
 };
 
@@ -44,6 +45,14 @@ pub const Sockaddr = extern union {
 	unix: Unix,
 	ipv4: Ipv4,
 	ipv6: Ipv6,
+
+	pub fn getPort( self: Sockaddr ) u16 {
+		return switch ( self.unknown.family ) {
+			.Ipv4 => self.ipv4.port,
+			.Ipv6 => self.ipv6.port,
+			else => 0
+		};
+	}
 
 	pub fn format( self: Sockaddr, comptime fmt: []const u8, fo: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
 		try switch ( self.unknown.family ) {

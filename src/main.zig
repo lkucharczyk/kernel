@@ -19,7 +19,9 @@ pub const os = struct {
 		pub const page_allocator = mem.kheapFba.allocator();
 	};
 
-	pub const system = struct {};
+	pub const system = struct {
+		pub const sockaddr = std.os.linux.sockaddr;
+	};
 };
 
 export const mbHeader: multiboot.Header align(4) linksection(".multiboot") = multiboot.Header.init( .{

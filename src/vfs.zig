@@ -3,6 +3,8 @@ const root = @import( "root" );
 const RootVfs = @import( "./fs/root.zig" ).RootVfs;
 
 pub const VTable = struct {
+	close:   ?*const fn( node: *Node ) void = null,
+
 	// NodeType.File
 	read:    ?*const fn( node: *Node, offset: u32, buf: []u8 ) u32 = null,
 	write:   ?*const fn( node: *Node, offset: u32, buf: []const u8 ) u32 = null,
@@ -45,6 +47,12 @@ pub const Node = struct {
 
 		std.debug.assert( std.mem.len( name ) < 64 );
 		@memcpy( &self.name, name );
+	}
+
+	pub fn close( self: *Node ) void {
+		if ( self.vtable.close ) |f| {
+			return f( self );
+		}
 	}
 
 	pub fn read( self: *Node, offset: u32, buf: []u8 ) u32 {

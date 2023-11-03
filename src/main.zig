@@ -7,6 +7,7 @@ const syscall = @import( "./syscall.zig" );
 const task = @import( "./task.zig" );
 const tty = @import( "./tty.zig" );
 const multiboot = @import( "./multiboot.zig" );
+const fmtUtil = @import( "./util/fmt.zig" );
 const Stream = @import( "./util/stream.zig" ).Stream;
 const MultiWriter = @import( "./util/stream.zig" ).MultiWriter;
 
@@ -68,8 +69,9 @@ export fn _startHigh() align(16) linksection(".text") callconv(.Naked) noreturn 
 	// push multiboot magic and info ptr
 	asm volatile (
 		\\ pushl %%eax
-		\\ addl $0xc0000000, %%ebx
+		\\ addl %[offset], %%ebx
 		\\ pushl %%ebx
+		:: [offset] "n" ( mem.ADDR_KMAIN_OFFSET )
 	);
 
 	asm volatile ( "call kmain" );
@@ -109,11 +111,40 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	mem.init();
 
 	if ( mbMagic == multiboot.Info.MAGIC ) {
-		log.printUnsafe( "multiboot: {x:0>8}\n{any}\n\n", .{ mbMagic, mbInfo } );
+		log.printUnsafe( "multiboot: {x:0>8}\n{?}\nbootloader: {}\ncmdline: {?}\n", .{
+			mbMagic, mbInfo,
+			fmtUtil.OptionalCStr { .data = mbInfo.?.getBootloaderName() },
+			fmtUtil.OptionalCStr { .data = mbInfo.?.getCmdline() } }
+		);
+
+		if ( mbInfo.?.getMemoryMap() ) |mmap| {
+			log.printUnsafe( "mmap:\n", .{} );
+			for ( mmap ) |entry| {
+				log.printUnsafe( "    - {}\n", .{ entry } );
+			}
+		}
+
+		log.printUnsafe( "\n", .{} );
+	} else {
+		log.printUnsafe( "multiboot: magic invalid!\n\n", .{} );
 	}
 
 	if ( @import( "./acpi/rsdp.zig" ).init() ) |rsdp| {
-		log.printUnsafe( "rsdp: {*}\n{}\n\n", .{ rsdp, rsdp } );
+		if ( rsdp.validate() ) {
+			const rsdt = rsdp.getRsdt();
+			if ( rsdt.validate() ) {
+				log.printUnsafe(
+					"rsdp: {[0]*} {[0]}\nrsdt: {[1]*} {[2]}\n\n",
+					.{ rsdp, rsdt, std.fmt.Formatter( @import( "./acpi/rsdt.zig" ).Rsdt.format ) { .data = rsdt } }
+				);
+			} else {
+				log.printUnsafe( "acpi: rsdt validation failed!\n\n", .{} );
+			}
+		} else {
+			log.printUnsafe( "acpi: rsdp validation failed!\n\n", .{} );
+		}
+	} else {
+		log.printUnsafe( "acpi: rsdp missing!\n\n", .{} );
 	}
 
 	@import( "./pit.zig" ).init( 100 );

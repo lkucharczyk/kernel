@@ -19,6 +19,24 @@ const Status = enum {
 	Done
 };
 
+const Error = enum(i16) {
+	Success                  =  0,
+	/// EBADF
+	BadFileDescriptor        =  9,
+	/// EACCES
+	PermissionDenied         = 13,
+	/// EINVAL
+	InvalidArgument          = 22,
+	/// EPROTONOSUPPORT
+	ProtocolNotSupported     = 93,
+	/// EAFNOSUPPORT
+	AdressFamilyNotSupported = 97,
+
+	pub fn getResult( self: Error ) isize {
+		return @intFromEnum( self );
+	}
+};
+
 pub const Task = struct {
 	id: u8,
 	status: Status,
@@ -28,6 +46,7 @@ pub const Task = struct {
 	kstack: []align(4096) u8 = undefined,
 	ustack: []align(4096) u8 = undefined,
 	fd: std.ArrayListUnmanaged( ?vfs.FileDescriptor ) = undefined,
+	errno: Error = .Success,
 
 	fn init( self: *Task ) std.mem.Allocator.Error!void {
 		self.kstack = try root.kheap.alignedAlloc( u8, 4096, KS );

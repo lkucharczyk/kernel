@@ -1,5 +1,6 @@
 const std = @import( "std" );
 const gdt = @import( "./gdt.zig" );
+const mem = @import( "./mem.zig" );
 const vga = @import( "./vga.zig" );
 const vfs = @import( "./vfs.zig" );
 const Stream = @import( "./util/stream.zig" ).Stream;
@@ -29,7 +30,7 @@ pub const Cursor = enum( u8 ) {
 	Disabled = 0x20
 };
 
-var buf: [*]volatile u16 = @ptrFromInt( 0xc00b_8000 );
+var buf: []volatile u16 = @as( [*]volatile u16, @ptrFromInt( mem.ADDR_KMAIN_OFFSET + 0xb8000 ) )[0..( cols * rows )];
 var col: u16 = 0;
 const cols: u16 = 80;
 var row: u16 = 0;
@@ -125,7 +126,7 @@ fn moveCursor( ncol: u16, nrow: u16 ) void {
 pub fn write( _: ?*anyopaque, msg: []const u8 ) error{}!usize {
 	for ( msg ) |c| {
 		if ( c == 0 ) {
-		 	break;
+			break;
 		}
 
 		putc( c );

@@ -1,4 +1,5 @@
 const std = @import( "std" );
+const mem = @import( "./mem.zig" );
 const x86 = @import( "./x86.zig" );
 
 pub const Segment = struct {
@@ -152,7 +153,7 @@ pub fn init() void {
 	table[5].set( @intFromPtr( &tss ), @sizeOf( Tss ), Entry.Access.TSS, @bitCast( @as( u4, 0 ) ) );
 
 	ptr = x86.TablePtr.init( Entry, 6, &table );
-	asm volatile ( "lgdt (%%eax)" :: [ptr] "{eax}" ( @intFromPtr( &ptr ) - 0xc000_0000 ) );
+	asm volatile ( "lgdt (%%eax)" :: [ptr] "{eax}" ( @intFromPtr( &ptr ) - mem.ADDR_KMAIN_OFFSET ) );
 	asm volatile ( "ltr %%ax" :: [id] "{ax}" ( Segment.TSS ) );
 
 	asm volatile (

@@ -1,13 +1,13 @@
 const std = @import( "std" );
 
-const ADDR_KMAIN_OFFSET = 0xc000_0000;
+pub const ADDR_KMAIN_OFFSET = 0xc000_0000;
 const KMAIN_PAGES = 1;
 const KHEAP_PAGES = 1;
 extern const ADDR_KMAIN_END: u8;
 
 pub const PagingDir = extern struct {
 	const Flags = packed struct(u8) {
-	    present: bool = false,
+		present: bool = false,
 		writeable: bool = false,
 		user: bool = false,
 		writeThrough: bool = false,
@@ -50,6 +50,12 @@ pub const PagingDir = extern struct {
 		for ( kpage..( kpage + pages ), 0.. ) |i, j| {
 			out.entries[i] = .{ .addressLow = j, .flags = flags };
 		}
+
+		const acpiOffset = 0x07fe_0000 >> 22;
+		out.entries[kpage + acpiOffset] = .{
+			.addressLow = acpiOffset,
+			.flags = .{ .present = true, .hugePage = true }
+		};
 
 		return out;
 	}

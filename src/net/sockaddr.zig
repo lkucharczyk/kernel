@@ -28,7 +28,7 @@ pub const Ipv4 = extern struct {
 	address: @import( "./ipv4.zig" ).Address,
 
 	pub fn format( self: Ipv4, _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
-		try std.fmt.format( writer, "{s}{{ {}:{} }}", .{ @typeName( Ipv4 ), self.address, netUtil.hton( u16, self.port ) } );
+		try std.fmt.format( writer, "{}:{}", .{ self.address, netUtil.hton( u16, self.port ) } );
 	}
 };
 

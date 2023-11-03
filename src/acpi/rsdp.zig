@@ -1,5 +1,10 @@
 const std = @import( "std" );
 const root = @import( "root" );
+const mem = @import( "../mem.zig" );
+const Rsdt = @import( "./rsdt.zig" ).Rsdt;
+
+const ADDR_RSDPSEARCH_START = mem.ADDR_KMAIN_OFFSET + 0x000e_0000;
+const ADDR_RSDPSEARCH_END   = mem.ADDR_KMAIN_OFFSET + 0x0010_0000;
 
 const Rsdp = extern struct {
 	const MAGIC = [8]u8 { 'R', 'S', 'D', ' ', 'P', 'T', 'R', ' ' };
@@ -10,24 +15,15 @@ const Rsdp = extern struct {
 	revision: u8 align(1),
 	rsdtAddr: u32 align(1),
 
+	pub fn getRsdt( self: Rsdp ) *const align(1) Rsdt {
+		return @ptrFromInt( mem.ADDR_KMAIN_OFFSET + self.rsdtAddr );
+	}
+
 	pub fn validate( self: Rsdp ) bool {
 		var sum: u8 = 0;
-
-		for ( self.magic ) |b| {
+		for ( @as( [*]const u8, @ptrCast( &self ) )[0..@sizeOf( Rsdp )] ) |b| {
 			sum +%= b;
 		}
-
-		sum +%= self.checksum;
-
-		for ( self.oemId ) |b| {
-			sum +%= b;
-		}
-
-		sum +%= self.revision;
-		sum +%= @truncate( self.rsdtAddr & 0xff );
-		sum +%= @truncate( ( self.rsdtAddr >> 8 ) & 0xff );
-		sum +%= @truncate( ( self.rsdtAddr >> 16 ) & 0xff );
-		sum +%= @truncate( ( self.rsdtAddr >> 24 ) & 0xff );
 
 		return sum == 0;
 	}
@@ -45,8 +41,8 @@ const Rsdp = extern struct {
 pub var ptr: ?*Rsdp = null;
 
 pub fn init() ?*Rsdp {
-	var rawPtr: [*]u8 = @ptrFromInt( 0xc00e_0000 );
-	while ( @intFromPtr( rawPtr ) < 0xc010_0000 ) {
+	for ( ADDR_RSDPSEARCH_START..ADDR_RSDPSEARCH_END ) |address| {
+		var rawPtr: [*]u8 = @ptrFromInt( address );
 		if ( std.mem.eql( u8, rawPtr[0..8], &Rsdp.MAGIC ) ) {
 			ptr = @as( *Rsdp, @ptrCast( rawPtr ) );
 			break;

@@ -53,7 +53,7 @@ pub const Body = extern struct {
 			} );
 
 			if ( self.dstHwAddr.eq( ethernet.Address.Empty ) or self.dstHwAddr.eq( ethernet.Address.Broadcast ) ) {
-				try std.fmt.format( writer, "??:??:??:??:??:?? ) }}", .{} );
+				_ = try writer.write( "??:??:??:??:??:?? ) }}" );
 			} else {
 				try std.fmt.format( writer, "{} ) }}", .{ self.dstHwAddr } );
 			}
@@ -93,7 +93,7 @@ pub const Packet = extern struct {
 			},
 			else => try std.fmt.format( writer, "{}", .{ self.body } ),
 		}
-		try std.fmt.format( writer, " }}", .{} );
+		_ = try writer.write( " }" );
 	}
 };
 

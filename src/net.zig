@@ -7,12 +7,13 @@ const x86 = @import( "./x86.zig" );
 pub const ethernet = @import( "./net/ethernet.zig" );
 pub const ipv4 = @import( "./net/ipv4.zig" );
 pub const loopback = @import( "./net/loopback.zig" );
+pub const sockaddr = @import( "./net/sockaddr.zig" );
 pub const util = @import( "./net/util.zig" );
 
 pub const Device = @import( "./net/device.zig" ).Device;
 pub const Interface = @import( "./net/interface.zig" ).Interface;
 pub const Socket = @import( "./net/socket.zig" ).Socket;
-pub const Sockaddr = @import( "./net/sockaddr.zig" ).Sockaddr;
+pub const Sockaddr = sockaddr.Sockaddr;
 
 pub const EntryL4 = struct {
 	protocol: ipv4.Protocol,
@@ -35,10 +36,18 @@ pub fn createInterface( device: Device ) *Interface {
 	return ptr;
 }
 
-pub fn createSocket() *vfs.Node {
+pub fn createSocket( family: sockaddr.Family, _: u32, protocol: ipv4.Protocol ) error{ InvalidFamily, InvalidFlags, InvalidProtocol }!*vfs.Node {
+	if ( family != .Ipv4 ) {
+		return error.InvalidFamily;
+	}
+
+	if ( protocol != .Udp ) {
+		return error.InvalidProtocol;
+	}
+
 	var ptr = sockets.create() catch unreachable;
-	ptr.family = .Ipv4;
-	ptr.protocol = .Udp;
+	ptr.family = family;
+	ptr.protocol = protocol;
 	ptr.stype = std.os.linux.SOCK.DGRAM;
 	ptr.init();
 	return &ptr.node;
@@ -98,12 +107,12 @@ pub fn recv( interface: *Interface, etherType: ethernet.EtherType, data: []const
 	}
 }
 
-pub fn send( protocol: ipv4.Protocol, sockaddr: Sockaddr, body: util.NetBody ) void {
-	switch ( sockaddr.unknown.family ) {
-		.Ipv4 => ipv4.send( protocol, sockaddr.ipv4, body ),
+pub fn send( protocol: ipv4.Protocol, addr: Sockaddr, body: util.NetBody ) void {
+	switch ( addr.unknown.family ) {
+		.Ipv4 => ipv4.send( protocol, addr.ipv4, body ),
 		else => root.log.printUnsafe(
 			"[net.send] Unsupported address family: {}\n",
-			.{ sockaddr.unknown.family }
+			.{ addr.unknown.family }
 		)
 	}
 }

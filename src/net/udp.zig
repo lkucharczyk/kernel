@@ -36,10 +36,61 @@ pub const Datagram = struct {
 	}
 };
 
-pub fn send( sockaddr: net.Sockaddr, body: []const u8 ) void {
+const PORTS_AUTO_START = 1024;
+pub var ports: [0xffff]?*net.Socket = .{ null } ** 0xffff;
+var portCounter: u16 = PORTS_AUTO_START - 1;
+pub fn bind( socket: *net.Socket, sockaddr: ?net.Sockaddr ) bool {
+	if ( sockaddr ) |a| {
+		var port = net.util.hton( u16, a.getPort() );
+		if ( port > 0 ) {
+			if ( ports[port] == null ) {
+				ports[port] = socket;
+				socket.address = a;
+				return true;
+			} else {
+				return false;
+			}
+		}
+	}
+
+	for ( 0..( 0xffff - PORTS_AUTO_START ) ) |_| {
+		portCounter +%= 1;
+		if ( portCounter == 0 ) {
+			portCounter = PORTS_AUTO_START;
+		}
+
+		if ( ports[portCounter] == null ) {
+			if ( sockaddr ) |a| {
+				socket.address = a;
+			}
+			socket.address.setPort( portCounter );
+			ports[portCounter] = socket;
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
+pub fn send( socket: ?*net.Socket, sockaddr: net.Sockaddr, body: []const u8 ) void {
+	var srcPort: u16 = 0;
+	if ( socket ) |s| {
+		srcPort = s.address.getPort();
+
+		if ( srcPort == 0 ) {
+			_ = bind( s, null );
+			srcPort = s.address.getPort();
+		}
+
+		if ( srcPort == 0 or ports[srcPort] != socket ) {
+			@panic( "Invalid socket port" );
+		}
+	}
+
 	var datagram = Datagram {
 		.header = .{
-			.srcPort = 5000,
+			.srcPort = srcPort,
 			.dstPort = net.util.hton( u16, sockaddr.getPort() )
 		},
 		.body = body
@@ -48,4 +99,17 @@ pub fn send( sockaddr: net.Sockaddr, body: []const u8 ) void {
 	datagram.hton();
 
 	net.send( .Udp, sockaddr, datagram.toNetBody() );
+}
+
+pub fn recv( entry: net.EntryL4 ) void {
+	if ( entry.data.len < @sizeOf( Header ) ) {
+		return;
+	}
+
+	const header: *const align( 1 ) Header = @ptrCast( entry.data );
+	if ( ports[net.util.hton( u16, header.dstPort )] ) |port| {
+		var addr = entry.sockaddr;
+		addr.setPort( header.srcPort );
+		port.internalRecv( addr, entry.data[@sizeOf( Header )..] );
+	}
 }

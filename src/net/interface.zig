@@ -8,7 +8,7 @@ const net = @import( "../net.zig" );
 const netUtil = @import( "./util.zig" );
 const Device = @import( "./device.zig" ).Device;
 
-var subnet: u8 = 0;
+var subnet: u8 = 100;
 pub const Interface = struct {
 	arena: std.heap.ArenaAllocator,
 	allocator: std.mem.Allocator,

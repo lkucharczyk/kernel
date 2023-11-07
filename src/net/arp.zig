@@ -112,7 +112,7 @@ pub fn recv( interface: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 		and interface.ipv4Addr != null
 		and interface.ipv4Addr.?.val == packet.body.eth_ipv4.dstProtoAddr.val
 	) {
-		root.log.printUnsafe( "arp req: {}\n", .{ packet } );
+		// root.log.printUnsafe( "arp req: {}\n", .{ packet } );
 
 		var response = Packet {
 			.header = .{ .opCode = .Response },

@@ -36,20 +36,23 @@ pub fn createInterface( device: Device ) *Interface {
 	return ptr;
 }
 
-pub fn createSocket( family: sockaddr.Family, _: u32, protocol: ipv4.Protocol ) error{ InvalidFamily, InvalidFlags, InvalidProtocol }!*vfs.Node {
+pub fn createSocket( family: sockaddr.Family, flags: u32, protocol: ipv4.Protocol ) error{ InvalidFamily, InvalidFlags, InvalidProtocol }!*vfs.Node {
+	var stype = Socket.Type.getType( flags ) orelse return error.InvalidFlags;
+
 	if ( family != .Ipv4 ) {
 		return error.InvalidFamily;
 	}
 
-	if ( protocol != .Udp ) {
+	if ( stype != .Datagram or protocol != .Udp ) {
 		return error.InvalidProtocol;
 	}
 
 	var ptr = sockets.create() catch unreachable;
 	ptr.family = family;
+	ptr.stype = stype;
 	ptr.protocol = protocol;
-	ptr.stype = std.os.linux.SOCK.DGRAM;
-	ptr.init();
+	ptr.init( root.kheap );
+
 	return &ptr.node;
 }
 
@@ -99,6 +102,7 @@ pub fn recv( interface: *Interface, etherType: ethernet.EtherType, data: []const
 	) |entryL4| {
 		switch ( entryL4.protocol ) {
 			.Icmp => @import( "./net/icmp.zig" ).recv( entryL4 ),
+			.Udp => @import( "./net/udp.zig" ).recv( entryL4 ),
 			else => {
 				root.log.printUnsafe( "[net.recv] Unsupported IpProto: {}\n", .{ entryL4.protocol } );
 				return;

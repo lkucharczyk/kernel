@@ -3,6 +3,8 @@ const net = @import( "../net.zig" );
 const netUtil = @import( "./util.zig" );
 
 pub const Address = packed struct(u32) {
+	pub const Any = Address { .val = 0 };
+
 	val: u32,
 
 	pub inline fn init( o: [4]u8 ) Address {
@@ -144,7 +146,7 @@ pub fn recv( _: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 	}
 
 	const header: *const align(1) Header = @ptrCast( data );
-	if ( netUtil.hton( u16, header.len ) <= data.len ) {
+	if ( netUtil.hton( Header.Flags, header.flags ).dontFragment and netUtil.hton( u16, header.len ) <= data.len ) {
 		return net.EntryL4 {
 			.protocol = header.protocol,
 			.data = data[@sizeOf( Header )..],

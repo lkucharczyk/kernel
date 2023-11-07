@@ -6,13 +6,15 @@ const net = @import( "./net.zig" );
 const x86 = @import( "./x86.zig" );
 
 pub const Syscall = enum(u32) {
-	Read   = 0,
-	Write  = 1,
-	Open   = 2,
-	Close  = 3,
-	Socket = 41,
-	SendTo = 44,
-	Exit   = 60,
+	Read     = 0,
+	Write    = 1,
+	Open     = 2,
+	Close    = 3,
+	Socket   = 41,
+	SendTo   = 44,
+	RecvFrom = 45,
+	Bind     = 49,
+	Exit     = 60,
 	_
 };
 
@@ -25,28 +27,41 @@ fn handlerIrq( state: *x86.State ) void {
 		6 => Syscall.Close,
 		102 => _: {
 			var args: [*]u32 = @ptrFromInt( state.ecx );
+			var argCount: u8 = 0;
+			var argId: Syscall = undefined;
 
-			break :_ switch ( state.ebx ) {
+			switch ( state.ebx ) {
 				1 => {
-					state.ebx = args[0];
-					state.ecx = args[1];
-					state.edx = args[2];
-					break :_ Syscall.Socket;
+					argCount = 3;
+					argId = Syscall.Socket;
+				},
+				2 => {
+					argCount = 3;
+					argId = Syscall.Bind;
 				},
 				11 => {
-					state.ebx = args[0];
-					state.ecx = args[1];
-					state.edx = args[2];
-					state.esi = args[3];
-					state.edi = args[4];
-					state.ebp = args[5];
-					break :_ Syscall.SendTo;
+					argCount = 6;
+					argId = Syscall.SendTo;
+				},
+				12 => {
+					argCount = 6;
+					argId = Syscall.RecvFrom;
 				},
 				else => return
-			};
+			}
+
+			inline for ( .{ "ebx", "ecx", "edx", "esi", "edi", "ebp" }, 0..6 ) |reg, i| {
+				if ( argCount > i ) {
+					@field( state, reg ) = args[i];
+				}
+			}
+
+			break :_ argId;
 		},
 		359 => Syscall.Socket,
+		361 => Syscall.Bind,
 		369 => Syscall.SendTo,
+		371 => Syscall.RecvFrom,
 		else => return
 	};
 
@@ -148,15 +163,42 @@ fn handler( id: Syscall, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg
 			( task.currentTask.fd.addOne( root.kheap ) catch unreachable ).* = .{ .node = node };
 			break :_ @bitCast( task.currentTask.fd.items.len - 1 );
 		},
+		// bind( fd, sockaddrPtr, sockaddrLen )
+		.Bind => _: {
+			var sockaddr: net.Sockaddr = undefined;
+
+			const mlen = @min( @sizeOf( net.Sockaddr ), arg2 );
+			@memcpy(
+				@as( [*]u8, @ptrCast( &sockaddr ) )[0..mlen],
+				@as( [*]const u8, @ptrFromInt( arg1 ) )[0..mlen]
+			);
+
+			root.log.printUnsafe( " {}, {} ", .{ arg0, sockaddr } );
+
+			if ( task.currentTask.fd.items.len > arg0 ) {
+				if ( task.currentTask.fd.items[arg0] ) |fd| {
+					if ( fd.node.ntype == .Socket ) {
+						var socket: *net.Socket = @alignCast( @ptrCast( fd.node.ctx ) );
+						break :_ if ( socket.bind( sockaddr ) ) 0 else -1;
+					} else {
+						task.currentTask.errno = .NotSocket;
+						break :_ -1;
+					}
+				}
+			}
+
+			task.currentTask.errno = .BadFileDescriptor;
+			break :_ -1;
+		},
 		// sendto( fd, bufPtr, bufLen, flags, sockaddrPtr, sockaddrLen )
 		.SendTo => _: {
-			var buf = @as( [*]u8, @ptrFromInt( arg1 ) )[0..arg2];
+			var buf = @as( [*]const u8, @ptrFromInt( arg1 ) )[0..arg2];
 			var sockaddr: net.Sockaddr = undefined;
 
 			const mlen = @min( @sizeOf( net.Sockaddr ), arg5 );
 			@memcpy(
 				@as( [*]u8, @ptrCast( &sockaddr ) )[0..mlen],
-				@as( [*]u8, @ptrFromInt( arg4 ) )[0..mlen]
+				@as( [*]const u8, @ptrFromInt( arg4 ) )[0..mlen]
 			);
 
 			root.log.printUnsafe( " {}, \"{s}\", {}, {} ", .{ arg0, buf, arg3, sockaddr } );
@@ -167,6 +209,50 @@ fn handler( id: Syscall, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg
 						var socket: *net.Socket = @alignCast( @ptrCast( fd.node.ctx ) );
 
 						break :_ socket.sendto( sockaddr, buf );
+					} else {
+						task.currentTask.errno = .NotSocket;
+						break :_ -1;
+					}
+				}
+			}
+
+			task.currentTask.errno = .BadFileDescriptor;
+			break :_ -1;
+		},
+		// recvfrom( fd, bufPtr, bufLen, flags, sockaddrPtr, sockaddrLenPtr )
+		.RecvFrom => _: {
+			var buf = @as( [*]u8, @ptrFromInt( arg1 ) )[0..arg2];
+			var addr: ?*align(1) net.Sockaddr = @ptrFromInt( arg4 );
+			var addrlen: ?*align(1) u32 = @ptrFromInt( arg5 );
+
+			root.log.printUnsafe( " {}, {*}, {}, {}, {*}, {*} ", .{ arg0, buf, buf.len, arg3, addr, addrlen } );
+			if ( task.currentTask.fd.items.len > arg0 ) {
+				if ( task.currentTask.fd.items[arg0] ) |fd| {
+					if ( fd.node.ntype == .Socket ) {
+						var socket: *net.Socket = @alignCast( @ptrCast( fd.node.ctx ) );
+						x86.enableInterrupts();
+						var out = socket.recvfrom();
+						x86.disableInterrupts();
+
+						const blen = @min( out.data.len, buf.len );
+						@memcpy( buf[0..blen], out.data[0..blen] );
+
+						if ( addrlen ) |al| {
+							const mlen = @min( out.srcAddr.getSize(), al.* );
+							if ( addr ) |a| {
+								@memcpy(
+									@as( [*]u8, @ptrCast( a ) )[0..mlen],
+									@as( [*]const u8, @ptrCast( &out.srcAddr ) )[0..mlen]
+								);
+							}
+						}
+
+						socket.alloc.free( out.data );
+
+						break :_ @bitCast( out.data.len );
+					} else {
+						task.currentTask.errno = .NotSocket;
+						break :_ -1;
 					}
 				}
 			}

@@ -8,6 +8,14 @@ fn write( fd: i32, buf: []const u8 ) void {
 	_ = linux.write( fd, buf.ptr, buf.len );
 }
 
+inline fn print( fd: i32, comptime fmt: []const u8, args: anytype ) void {
+	std.fmt.format( std.io.Writer( i32, anyerror, writeStream ) { .context = fd }, fmt, args ) catch unreachable;
+}
+
+fn writeStream( fd: i32, buf: []const u8 ) anyerror!usize {
+	return linux.write( fd, buf.ptr, buf.len );
+}
+
 fn shell( dev: [:0]const u8 ) void {
 	const SYSCALL_ERR: usize = @bitCast( @as( isize, -1 ) );
 
@@ -60,6 +68,21 @@ fn process( fd: i32, cmd: []const u8 ) void {
 			} else {
 				write( fd, "commands: sendudp, exit\n" );
 			}
+		} else if ( std.mem.eql( u8, cmd0, "recvudp" ) ) {
+			var sock: i32 = @bitCast( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) );
+			var src: @import( "./net/sockaddr.zig" ).Ipv4 = undefined;
+			var srclen: u32 = @sizeOf( @TypeOf( src ) );
+			var buf: [0x600]u8 = undefined;
+
+			const addr = linux.sockaddr.in {
+				.addr = 0,
+				.port = @byteSwap( std.fmt.parseInt( u16, iter.next() orelse return, 0 ) catch return )
+			};
+			_ = linux.bind( sock, @ptrCast( &addr ), @sizeOf( linux.sockaddr.in ) );
+
+			var len = linux.recvfrom( sock, &buf, buf.len, 0, @ptrCast( &src ), &srclen );
+			print( fd, "{}: \"{s}\"\n", .{ src, std.mem.trim( u8, buf[0..len], "\n\x00" ) } );
+			_ = linux.close( sock );
 		} else if ( std.mem.eql( u8, cmd0, "sendudp" ) ) {
 			var dst = std.net.Ip4Address.parse(
 				iter.next() orelse return,

@@ -23,17 +23,21 @@ const Error = enum(i16) {
 	Success                  =  0,
 	/// EBADF
 	BadFileDescriptor        =  9,
+	/// ENOMEM
+	NoMemory                 = 12,
 	/// EACCES
 	PermissionDenied         = 13,
 	/// EINVAL
 	InvalidArgument          = 22,
+	/// ENOTSOCK
+	NotSocket                = 88,
 	/// EPROTONOSUPPORT
 	ProtocolNotSupported     = 93,
 	/// EAFNOSUPPORT
 	AdressFamilyNotSupported = 97,
 
 	pub fn getResult( self: Error ) isize {
-		return @intFromEnum( self );
+		return -@intFromEnum( self );
 	}
 };
 

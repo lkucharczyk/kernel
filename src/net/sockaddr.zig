@@ -24,8 +24,8 @@ pub const Unix = extern struct {
 
 pub const Ipv4 = extern struct {
 	family: Family = .Ipv4,
-	port: u16,
-	address: @import( "./ipv4.zig" ).Address,
+	port: u16 = 0,
+	address: @import( "./ipv4.zig" ).Address = @import( "./ipv4.zig" ).Address.Any,
 
 	pub fn format( self: Ipv4, _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
 		try std.fmt.format( writer, "{}:{}", .{ self.address, netUtil.hton( u16, self.port ) } );
@@ -50,6 +50,23 @@ pub const Sockaddr = extern union {
 		return switch ( self.unknown.family ) {
 			.Ipv4 => self.ipv4.port,
 			.Ipv6 => self.ipv6.port,
+			else => 0
+		};
+	}
+
+	pub fn setPort( self: *align(4) Sockaddr, port: u16 ) void {
+		switch ( self.unknown.family ) {
+			.Ipv4 => { self.ipv4.port = port; },
+			.Ipv6 => { self.ipv6.port = port; },
+			else => {}
+		}
+	}
+
+	pub fn getSize( self: Sockaddr ) usize {
+		return switch ( self.unknown.family ) {
+			.Ipv4 => @sizeOf( Ipv4 ),
+			.Ipv6 => @sizeOf( Ipv6 ),
+			.Unix => @sizeOf( Unix ),
 			else => 0
 		};
 	}

@@ -1,3 +1,4 @@
+#!/usr/bin/env sh
 modprobe tun
 
 ip tuntap add dev tap0 mode tap group network

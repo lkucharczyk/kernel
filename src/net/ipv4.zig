@@ -146,7 +146,22 @@ pub fn recv( _: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 	}
 
 	const header: *const align(1) Header = @ptrCast( data );
-	if ( netUtil.hton( Header.Flags, header.flags ).dontFragment and netUtil.hton( u16, header.len ) <= data.len ) {
+
+	var addrMatch = false;
+	for ( net.interfaces.items ) |interface| {
+		if ( interface.ipv4Addr ) |addr| {
+			if ( addr.val == header.dstAddr.val ) {
+				addrMatch = true;
+				break;
+			}
+		}
+	}
+
+	if (
+		addrMatch
+		and netUtil.hton( Header.Flags, header.flags ).dontFragment
+		and netUtil.hton( u16, header.len ) <= data.len
+	) {
 		return net.EntryL4 {
 			.protocol = header.protocol,
 			.data = data[@sizeOf( Header )..],
@@ -163,9 +178,18 @@ pub fn recv( _: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 }
 
 var sendId: u16 = 0;
-pub fn send( protocol: Protocol, sockaddr: @import( "./sockaddr.zig" ).Ipv4, body: netUtil.NetBody ) void {
+pub fn send( protocol: Protocol, sockaddr: net.sockaddr.Ipv4, body: netUtil.NetBody ) void {
 	// TODO: add proper routing
-	var interface = net.interfaces.items[1];
+	var interface: *const net.Interface = &net.interfaces.items[1];
+	for ( net.interfaces.items ) |*netif| {
+		if ( netif.ipv4Addr ) |addr| {
+			if ( addr.val == sockaddr.address.val ) {
+				interface = netif;
+				break;
+			}
+		}
+	}
+
 	var packet = Packet {
 		.header = .{
 			.protocol = protocol,

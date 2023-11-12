@@ -13,15 +13,15 @@ fn getQemu( b: *std.Build, comptime arch: std.Target.Cpu.Arch, comptime debug: b
 			++ " -kernel ./zig-out/bin/kernel.elf"
 			++ " -vga virtio"
 			++ " -device isa-debug-exit"
-			++ " -serial vc"
-			++ " -serial vc"
+			++ ( " -serial vc" ** 4 )
+			++ " -parallel none"
 			++ " -nic tap,id=n0,model=rtl8139,ifname=tap0,script=no,downscript=no"
 			++ " -nic tap,id=n1,model=rtl8139,ifname=tap1,script=no,downscript=no"
 			++ " -no-reboot -no-shutdown"
 			++ " -d int"
 			++ ( if ( debug ) ( " -s -S" ) else ( " -s" ) )
 			++ " 2>&1"
-			++ "| grep -A10 ^check_exception"
+			++ "| grep -A10 -E '^(check_exception|qemu-system)'"
 	} );
 
 	return qemu;
@@ -58,6 +58,7 @@ pub fn build( b: *std.Build ) !void {
 		"objdump -t ./zig-out/bin/kernel.elf"
 			++ "| tail -n+5"
 			++ "| head -n-2"
+			++ "| grep -E '^[0-9a-f]+ .{6}[fF]'"
 			++ "| sed -nr 's/^([0-9a-f]+).*?\\t([0-9a-f]+) (.+)$/\\1 \\2 \\3/p'"
 			++ "| sort"
 			++ "| tee ./zig-cache/symbolmap.txt"

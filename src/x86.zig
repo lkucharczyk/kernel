@@ -122,8 +122,8 @@ pub inline fn out( comptime T: type, port: u16, val: T ) void {
 pub inline fn saveState( comptime inInt: bool ) void {
 	if ( !inInt ) {
 		asm volatile (
-			\\ pushl %%eax
-			\\ pushl %%eax
+			\\ pushl $0
+			\\ pushl $0
 		);
 	}
 
@@ -138,20 +138,20 @@ pub inline fn saveState( comptime inInt: bool ) void {
 		\\ mov %%ax, %%es
 		\\ mov %%ax, %%fs
 		\\ mov %%ax, %%gs
-		\\ mov %%esp, %%eax
-		\\ pushl %%eax
+		\\ pushl %%esp
+		::: "memory"
 	);
 }
 
 pub inline fn restoreState() void {
 	asm volatile (
-		\\ popl %%eax
+		\\ addl $4, %%esp
 		\\ popl %%gs
 		\\ popl %%fs
 		\\ popl %%es
 		\\ popl %%ds
 		\\ popa
-		\\ popl %%eax
-		\\ popl %%eax
+		\\ addl $8, %%esp
+		::: "memory"
 	);
 }

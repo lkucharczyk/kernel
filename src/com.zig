@@ -1,8 +1,10 @@
 const std = @import( "std" );
 const root = @import( "root" );
 const gdt = @import( "./gdt.zig" );
+const irq = @import( "./irq.zig" );
 const vfs = @import( "./vfs.zig" );
 const x86 = @import( "./x86.zig" );
+const RingBuffer = @import( "./util/ringBuffer.zig" ).RingBuffer;
 const Stream = @import( "./util/stream.zig" ).Stream;
 
 const RegisterOffset = struct {
@@ -89,6 +91,7 @@ pub var ports: [8]?SerialPort = .{ null } ** 8;
 
 pub const SerialPort = struct {
 	address: u16,
+	buffer: RingBuffer( u8, 64 ) = .{},
 	fsNode: vfs.Node = undefined,
 
 	pub fn init( address: u16 ) ?SerialPort {
@@ -157,15 +160,19 @@ pub const SerialPort = struct {
 		return res;
 	}
 
-	pub fn read( self: SerialPort, buf: []u8 ) usize {
+	pub fn read( self: *SerialPort, buf: []u8, fd: ?*vfs.FileDescriptor ) usize {
 		self.setInterrupts( .{ .dataAvailable = true } );
 
 		for ( 0..buf.len ) |i| {
-			while ( !self.getLineStatus().dataReady ) {
-				asm volatile ( "hlt" );
+			while ( self.buffer.isEmpty() ) {
+				if ( fd ) |wfd| {
+					@import( "./task.zig" ).currentTask.park( .{ .fd = wfd } );
+				} else {
+					asm volatile ( "hlt" );
+				}
 			}
 
-			buf[i] = self.in( u8, RegisterOffset.Data );
+			buf[i] = self.buffer.pop().?;
 			if ( buf[i] == '\r' ) {
 				buf[i] = '\n';
 			}
@@ -184,7 +191,7 @@ pub const SerialPort = struct {
 			}
 
 			while ( !self.getLineStatus().txHoldEmpty ) {
-				asm volatile ( "hlt" );
+				// asm volatile ( "hlt" );
 			}
 
 			if ( c == '\n' ) {
@@ -212,17 +219,24 @@ pub const SerialPort = struct {
 		return std.fmt.format( self.writer(), fmt, args ) catch unreachable;
 	}
 
-	pub fn fsRead( self: *vfs.Node, _: u32, buf: []u8 ) u32 {
-		const ctx: *SerialPort = @alignCast( @ptrCast( self.ctx ) );
-		return ctx.read( buf );
+	fn irqHandler( self: *SerialPort ) void {
+		while ( self.getLineStatus().dataReady ) {
+			_ = self.buffer.push( self.in( u8, RegisterOffset.Data ) );
+			self.fsNode.signal();
+		}
 	}
 
-	pub fn fsWrite( self: *vfs.Node, _: u32, buf: []const u8 ) u32 {
+	pub fn fsRead( self: *vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) u32 {
+		const ctx: *SerialPort = @alignCast( @ptrCast( self.ctx ) );
+		return ctx.read( buf, fd );
+	}
+
+	pub fn fsWrite( self: *vfs.Node, _: *vfs.FileDescriptor, buf: []const u8 ) u32 {
 		const ctx: *SerialPort = @alignCast( @ptrCast( self.ctx ) );
 		return ctx.write( buf );
 	}
 
-	pub fn reader( self: SerialPort ) std.io.Reader( SerialPort, error{}, streamRead ) {
+	pub fn reader( self: *SerialPort ) std.io.Reader( SerialPort, error{}, streamRead ) {
 		return .{ .context = self };
 	}
 
@@ -230,8 +244,8 @@ pub const SerialPort = struct {
 		return .{ .context = self };
 	}
 
-	pub fn streamRead( self: SerialPort, buf: []u8 ) error{}!usize {
-		return self.read( buf );
+	pub fn streamRead( self: *SerialPort, buf: []u8 ) error{}!usize {
+		return self.read( buf, null );
 	}
 
 	pub fn streamWrite( self: SerialPort, buf: []const u8 ) error{}!usize {
@@ -249,6 +263,24 @@ pub const SerialPort = struct {
 	}
 };
 
+fn irqHandlerEven( _: *x86.State ) void {
+	var i: usize = 0;
+	while ( i < ports.len ) : ( i += 2 ) {
+		if ( ports[i] ) |*port| {
+			port.irqHandler();
+		}
+	}
+}
+
+fn irqHandlerOdd( _: *x86.State ) void {
+	var i: usize = 1;
+	while ( i < ports.len ) : ( i += 2 ) {
+		if ( ports[i] ) |*port| {
+			port.irqHandler();
+		}
+	}
+}
+
 pub fn init() void {
 	const adresses = @typeInfo( PortAddress );
 	inline for ( adresses.Enum.fields, 0.. ) |f, i| {
@@ -262,4 +294,7 @@ pub fn init() void {
 			vfs.devNode.link( &port.fsNode ) catch unreachable;
 		}
 	}
+
+	irq.set( irq.Interrupt.Com1, irqHandlerEven );
+	irq.set( irq.Interrupt.Com2, irqHandlerOdd );
 }

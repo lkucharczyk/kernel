@@ -4,6 +4,7 @@ const net = @import( "../net.zig" );
 const netUtil = @import( "./util.zig" );
 const udp = @import( "./udp.zig" );
 const sockaddr = @import( "./sockaddr.zig" );
+const task = @import( "../task.zig" );
 const vfs = @import( "../vfs.zig" );
 const Queue = @import( "../util/queue.zig" ).Queue;
 
@@ -62,41 +63,47 @@ pub const Socket = struct {
 		net.destroySocket( self );
 	}
 
-	pub fn bind( self: *Socket, addr: sockaddr.Sockaddr ) bool {
+	pub fn bind( self: *Socket, addr: sockaddr.Sockaddr ) error{ AddressInUse, InvalidArgument }!void {
 		if ( self.family != addr.unknown.family ) {
-			return false;
+			return task.Error.InvalidArgument;
 		}
 
 		return switch ( self.protocol ) {
 			.Udp => udp.bind( self, addr ),
-			else => false
+			else => task.Error.InvalidArgument
 		};
 	}
 
 	pub fn internalRecv( self: *Socket, addr: sockaddr.Sockaddr, buf: []const u8 ) void {
-		if ( !(
+		if (
 			self.rxQueue.push( Message {
 				.data = self.alloc.dupe( u8, buf ) catch unreachable,
 				.srcAddr = addr
 			} ) catch unreachable
-		) ) {
+		) {
+			self.node.signal();
+		} else {
 			@import( "root" ).log.printUnsafe( "Socket dropped frame!\n", .{} );
 		}
 	}
 
-	pub fn recvfrom( self: *Socket ) Message {
+	pub fn recvfrom( self: *Socket, fd: ?*vfs.FileDescriptor ) Message {
 		while ( true ) {
 			if ( self.rxQueue.pop() ) |msg| {
 				return msg;
 			}
 
-			asm volatile ( "int $0x20" );
+			if ( fd ) |wfd| {
+				task.currentTask.park( .{ .fd = wfd } );
+			} else {
+				asm volatile ( "hlt" );
+			}
 		}
 	}
 
-	pub fn sendto( self: *Socket, addr: sockaddr.Sockaddr, buf: []const u8 ) isize {
+	pub fn sendto( self: *Socket, addr: sockaddr.Sockaddr, buf: []const u8 ) error{ InvalidArgument }!isize {
 		if ( addr.unknown.family != self.family ) {
-			return -1;
+			return task.Error.InvalidArgument;
 		}
 
 		return switch ( self.protocol ) {
@@ -104,7 +111,7 @@ pub const Socket = struct {
 				udp.send( self, addr, buf );
 				break :_ @bitCast( buf.len );
 			},
-			else => -1
+			else => task.Error.InvalidArgument
 		};
 	}
 };

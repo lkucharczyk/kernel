@@ -8,8 +8,8 @@ const isr = @import( "./isr.zig" );
 pub const Interrupt = struct {
 	pub const Pit      = 0x20;
 	pub const Keyboard = 0x21;
-	pub const Com2     = 0x22;
-	pub const Com1     = 0x23;
+	pub const Com2     = 0x23;
+	pub const Com1     = 0x24;
 	pub const Syscall  = 0x80;
 };
 
@@ -58,18 +58,56 @@ pub fn unset( irq: u8 ) void {
 	handlers[irq - 32] = null;
 }
 
+pub fn mask( irq: u8 ) void {
+	const int: u8 = irq - 0x20;
+	if ( int < 8 ) {
+		x86.out(
+			u8,
+			Register.Pic1Data,
+			x86.in( u8, Register.Pic1Data ) | ( @as( u8, 1 ) << @as( u3, @truncate( int ) ) )
+		);
+	} else if ( int < 16 ) {
+		x86.out(
+			u8,
+			Register.Pic2Data,
+			x86.in( u8, Register.Pic2Data ) & ( 0xff ^ ( @as( u8, 1 ) << @as( u3, @truncate( int - 8 ) ) ) )
+		);
+	}
+}
+
+pub fn unmask( irq: u8 ) void {
+	const int: u8 = irq - 0x20;
+	if ( int < 8 ) {
+		x86.out(
+			u8,
+			Register.Pic1Data,
+			x86.in( u8, Register.Pic1Data ) & ( 0xff ^ ( @as( u8, 1 ) << @as( u3, @truncate( int ) ) ) )
+		);
+	} else if ( int < 16 ) {
+		x86.out(
+			u8,
+			Register.Pic2Data,
+			x86.in( u8, Register.Pic2Data ) & ( 0xff ^ ( @as( u8, 1 ) << @as( u3, @truncate( int ) ) ) )
+		);
+	}
+}
+
 export fn irqHandler( state: *x86.State ) void {
-	// root.log.printUnsafe( "irq: {}:{}\n", .{ state.intNum, state.errNum } );
+	// if ( state.intNum != 0x20 ) {
+	// 	root.log.printUnsafe( "irq: {}:{}\n", .{ state.intNum, state.errNum } );
+	// }
 
 	if ( state.intNum >= 32 ) {
+		if ( state.intNum <= 48 ) {
+			if ( state.intNum >= 40 ) {
+				x86.out( u8, Register.Pic2Command, Command.EndOfInterrupt );
+			}
+
+			x86.out( u8, Register.Pic1Command, Command.EndOfInterrupt );
+		}
+
 		if ( handlers[state.intNum - 32] ) |handler| {
 			handler( state );
 		}
-
-		if ( state.intNum >= 40 ) {
-			x86.out( u8, Register.Pic2Command, Command.EndOfInterrupt );
-		}
-
-		x86.out( u8, Register.Pic1Command, Command.EndOfInterrupt );
 	}
 }

@@ -3,11 +3,12 @@ const root = @import( "root" );
 const RootVfs = @import( "./fs/root.zig" ).RootVfs;
 
 pub const VTable = struct {
+	open:    ?*const fn( node: *Node, fd: *FileDescriptor ) void = null,
 	close:   ?*const fn( node: *Node ) void = null,
 
 	// NodeType.File
-	read:    ?*const fn( node: *Node, offset: u32, buf: []u8 ) u32 = null,
-	write:   ?*const fn( node: *Node, offset: u32, buf: []const u8 ) u32 = null,
+	read:    ?*const fn( node: *Node, fd: *FileDescriptor, buf: []u8 ) u32 = null,
+	write:   ?*const fn( node: *Node, fd: *FileDescriptor, buf: []const u8 ) u32 = null,
 
 	// NodeType.Directory
 	link:    ?*const fn( node: *Node, target: *Node ) std.mem.Allocator.Error!void = null,
@@ -30,6 +31,7 @@ pub const Node = struct {
 	ctx: *anyopaque = undefined,
 	vtable: VTable,
 	mountpoint: ?*Node = null,
+	descriptors: std.ArrayListUnmanaged( *FileDescriptor ),
 
 	pub inline fn init(
 		self: *Node,
@@ -44,28 +46,56 @@ pub const Node = struct {
 		self.ctx = ctx;
 		self.vtable = vtable;
 		self.mountpoint = null;
+		self.descriptors = .{};
 
 		std.debug.assert( std.mem.len( name ) < 64 );
 		@memcpy( &self.name, name );
 	}
 
-	pub fn close( self: *Node ) void {
+	pub fn open( self: *Node ) error{ OutOfMemory }!*FileDescriptor {
+		const fd = try descriptorPool.create();
+		fd.init( self );
+		try self.descriptors.append( root.kheap, fd );
+
+		if ( self.vtable.open ) |f| {
+			f( self, fd );
+		}
+
+		return fd;
+	}
+
+	pub fn close( self: *Node, fd: *FileDescriptor ) void {
 		if ( self.vtable.close ) |f| {
 			return f( self );
 		}
+
+		for ( self.descriptors.items, 0.. ) |nfd, i| {
+			if ( nfd == fd ) {
+				_ = self.descriptors.swapRemove( i );
+				break;
+			}
+		}
+
+		descriptorPool.destroy( fd );
 	}
 
-	pub fn read( self: *Node, offset: u32, buf: []u8 ) u32 {
+	pub fn signal( self: *Node ) void {
+		for ( self.descriptors.items ) |fd| {
+			fd.ready = true;
+		}
+	}
+
+	pub fn read( self: *Node, fd: *FileDescriptor, buf: []u8 ) u32 {
 		if ( self.vtable.read ) |f| {
-			return f( self, offset, buf );
+			return f( self, fd, buf );
 		}
 
 		return @bitCast( @as( i32, -1 ) );
 	}
 
-	pub fn write( self: *Node, offset: u32, buf: []const u8 ) u32 {
+	pub fn write( self: *Node, fd: *FileDescriptor, buf: []const u8 ) u32 {
 		if ( self.vtable.write ) |f| {
-			return f( self, offset, buf );
+			return f( self, fd, buf );
 		}
 
 		return @bitCast( @as( i32, -1 ) );
@@ -150,14 +180,29 @@ pub const Node = struct {
 
 pub const FileDescriptor = struct {
 	node: *Node,
+	ready: bool = false,
 	offset: usize = 0,
 
-	pub fn read( self: FileDescriptor, buf: []u8 ) u32 {
-		return self.node.read( self.offset, buf );
+	fn init( self: *FileDescriptor, node: *Node ) void {
+		self.node = node;
+		self.ready = false;
+		self.offset = 0;
 	}
 
-	pub fn write( self: FileDescriptor, buf: []const u8 ) u32 {
-		return self.node.write( self.offset, buf );
+	pub fn getSocket( self: FileDescriptor ) ?*@import( "./net.zig" ).Socket {
+		if ( self.node.ntype == .Socket ) {
+			return @alignCast( @ptrCast( self.node.ctx ) );
+		}
+
+		return null;
+	}
+
+	pub fn read( self: *FileDescriptor, buf: []u8 ) u32 {
+		return self.node.read( self, buf );
+	}
+
+	pub fn write( self: *FileDescriptor, buf: []const u8 ) u32 {
+		return self.node.write( self, buf );
 	}
 };
 
@@ -179,11 +224,13 @@ pub fn printTree( node: *Node, indent: usize ) void {
 	}
 }
 
+var descriptorPool: std.heap.MemoryPoolExtra( FileDescriptor, .{} ) = undefined;
 var rootVfs: RootVfs = undefined;
 pub var rootNode: *Node = undefined;
 pub var devNode: *Node = undefined;
 
 pub fn init() std.mem.Allocator.Error!void {
+	descriptorPool = try std.heap.MemoryPoolExtra( FileDescriptor, .{} ).initPreheated( root.kheap, 32 );
 	rootNode = try rootVfs.init( root.kheap );
 	devNode = try rootNode.mkdir( "dev" );
 }

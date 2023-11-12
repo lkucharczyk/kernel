@@ -46,6 +46,10 @@ pub fn RingBuffer( comptime T: type, comptime S: comptime_int ) type {
 
 			return null;
 		}
+
+		pub fn isEmpty( self: Self ) bool {
+			return self.items[self.posr] == null;
+		}
 	};
 }
 

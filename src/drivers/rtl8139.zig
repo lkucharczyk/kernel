@@ -278,7 +278,6 @@ const Rtl8139 = struct {
 
 			bufFrame.header.src = self.macAddr;
 
-			x86.disableInterrupts();
 			self.out( u32, RegisterOffset.TxAddress[i], @intFromPtr( bufFrame ) - 0xc000_0000 );
 			self.out( TxStatus, RegisterOffset.TxStatus[i], .{
 				.length = @truncate( bufFrame.len ),
@@ -291,7 +290,6 @@ const Rtl8139 = struct {
 
 			_ = self.txBuffer.pop();
 			self.outT( InterruptStatus { .txOk = true } );
-			x86.enableInterrupts();
 		} else {
 			@panic( "rtl8139 tx buffer full" );
 		}

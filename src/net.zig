@@ -36,18 +36,20 @@ pub fn createInterface( device: Device ) *Interface {
 	return ptr;
 }
 
-pub fn createSocket( family: sockaddr.Family, flags: u32, protocol: ipv4.Protocol ) error{ InvalidFamily, InvalidFlags, InvalidProtocol }!*vfs.Node {
-	var stype = Socket.Type.getType( flags ) orelse return error.InvalidFlags;
+pub fn createSocket(
+	family: sockaddr.Family, flags: u32, protocol: ipv4.Protocol
+) error{ AddressFamilyNotSupported, InvalidArgument, ProtocolNotSupported, OutOfMemory }!*vfs.Node {
+	var stype = Socket.Type.getType( flags ) orelse return error.InvalidArgument;
 
 	if ( family != .Ipv4 ) {
-		return error.InvalidFamily;
+		return error.AddressFamilyNotSupported;
 	}
 
 	if ( stype != .Datagram or protocol != .Udp ) {
-		return error.InvalidProtocol;
+		return error.ProtocolNotSupported;
 	}
 
-	var ptr = sockets.create() catch unreachable;
+	var ptr = try sockets.create();
 	ptr.family = family;
 	ptr.stype = stype;
 	ptr.protocol = protocol;
@@ -82,7 +84,7 @@ fn daemon() void {
 		}
 
 		if ( park ) {
-			netTask.park();
+			netTask.park( .Manual );
 		}
 		x86.enableInterrupts();
 	}

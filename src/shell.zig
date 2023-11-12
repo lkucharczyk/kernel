@@ -1,10 +1,11 @@
 const std = @import( "std" );
+const Errno = @import( "./task.zig" ).Errno;
 
 const linux = std.os.linux;
 
 const BUFSIZE = 80;
 
-fn write( fd: i32, buf: []const u8 ) void {
+inline fn write( fd: i32, buf: []const u8 ) void {
 	_ = linux.write( fd, buf.ptr, buf.len );
 }
 
@@ -33,7 +34,7 @@ fn shell( dev: [:0]const u8 ) void {
 				write( fd, "\n" );
 
 				if ( p > 0 ) {
-					process( fd, std.mem.trim( u8, buf[0..p], " " ) );
+					process( fd, std.mem.trim( u8, buf[0..p], " " ) ) catch {};
 				}
 
 				p = 0;
@@ -54,7 +55,17 @@ fn shell( dev: [:0]const u8 ) void {
 	}
 }
 
-fn process( fd: i32, cmd: []const u8 ) void {
+fn h( retval: usize ) error{ SyscallError }!usize {
+	const i: isize = @bitCast( retval );
+	if ( i <= -1 and i >= -1024 ) {
+		print( 3, "error: {}\n", .{ @as( Errno, @enumFromInt( -i ) ) } );
+		return error.SyscallError;
+	}
+
+	return retval;
+}
+
+fn process( fd: i32, cmd: []const u8 ) error{ SyscallError }!void {
 	var iter = std.mem.tokenizeScalar( u8, cmd, ' ' );
 
 	if ( iter.next() ) |cmd0| {
@@ -63,13 +74,17 @@ fn process( fd: i32, cmd: []const u8 ) void {
 			linux.exit( 0 );
 		} else if ( std.mem.eql( u8, cmd0, "help" ) ) {
 			var cmd1 = iter.next() orelse "";
-			if ( std.mem.eql( u8, cmd1, "sendudp" ) ) {
+			if ( std.mem.eql( u8, cmd1, "recvudp" ) ) {
+				write( fd, "recvudp [port]\n" );
+			} else if ( std.mem.eql( u8, cmd1, "sendudp" ) ) {
 				write( fd, "sendudp [ipv4 address] [port] [data...]\n" );
 			} else {
-				write( fd, "commands: sendudp, exit\n" );
+				write( fd, "commands: recvudp, sendudp, exit\n" );
 			}
 		} else if ( std.mem.eql( u8, cmd0, "recvudp" ) ) {
-			var sock: i32 = @bitCast( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) );
+			var sock: i32 = @bitCast( try h( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) ) );
+			defer _ = linux.close( sock );
+
 			var src: @import( "./net/sockaddr.zig" ).Ipv4 = undefined;
 			var srclen: u32 = @sizeOf( @TypeOf( src ) );
 			var buf: [0x600]u8 = undefined;
@@ -78,21 +93,20 @@ fn process( fd: i32, cmd: []const u8 ) void {
 				.addr = 0,
 				.port = @byteSwap( std.fmt.parseInt( u16, iter.next() orelse return, 0 ) catch return )
 			};
-			_ = linux.bind( sock, @ptrCast( &addr ), @sizeOf( linux.sockaddr.in ) );
+			_ = try h( linux.bind( sock, @ptrCast( &addr ), @sizeOf( linux.sockaddr.in ) ) );
 
-			var len = linux.recvfrom( sock, &buf, buf.len, 0, @ptrCast( &src ), &srclen );
+			var len = try h( linux.recvfrom( sock, &buf, buf.len, 0, @ptrCast( &src ), &srclen ) );
 			print( fd, "{}: \"{s}\"\n", .{ src, std.mem.trim( u8, buf[0..len], "\n\x00" ) } );
-			_ = linux.close( sock );
 		} else if ( std.mem.eql( u8, cmd0, "sendudp" ) ) {
 			var dst = std.net.Ip4Address.parse(
 				iter.next() orelse return,
 				std.fmt.parseInt( u16, iter.next() orelse return, 0 ) catch return
 			) catch return;
-			var sock: i32 = @bitCast( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) );
+			var sock: i32 = @bitCast( try h( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) ) );
 			var buf = iter.rest();
 
-			_ = linux.sendto( sock, buf.ptr, buf.len, 0, @ptrCast( &dst.sa ), @sizeOf( linux.sockaddr.in ) );
-			_ = linux.close( sock );
+			_ = try h( linux.sendto( sock, buf.ptr, buf.len, 0, @ptrCast( &dst.sa ), @sizeOf( linux.sockaddr.in ) ) );
+			_ = try h( linux.close( sock ) );
 		}
 	}
 }

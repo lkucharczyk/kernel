@@ -11,32 +11,67 @@ pub var currentTask: *Task = undefined;
 const KS = 32 * 1024;
 const US = 32 * 1024;
 
-const Status = enum {
+const StatusWait = union(enum) {
+	fd: *vfs.FileDescriptor,
+	Manual
+};
+
+const Status = union(enum) {
 	Kernel,
 	Start,
-	Wait,
+	Wait: StatusWait,
 	Active,
 	Done
 };
 
-const Error = enum(i16) {
-	Success                  =  0,
-	/// EBADF
-	BadFileDescriptor        =  9,
-	/// ENOMEM
-	NoMemory                 = 12,
-	/// EACCES
-	PermissionDenied         = 13,
-	/// EINVAL
-	InvalidArgument          = 22,
-	/// ENOTSOCK
-	NotSocket                = 88,
-	/// EPROTONOSUPPORT
-	ProtocolNotSupported     = 93,
-	/// EAFNOSUPPORT
-	AdressFamilyNotSupported = 97,
+pub const Error = error {
+	BadFileDescriptor,
+	OutOfMemory,
+	PermissionDenied,
+	InvalidPointer,
+	InvalidArgument,
+	NotSocket,
+	ProtocolNotSupported,
+	AddressFamilyNotSupported,
+	AddressInUse
+};
 
-	pub fn getResult( self: Error ) isize {
+pub const Errno = enum(i16) {
+	Success                   =  0,
+	/// EBADF
+	BadFileDescriptor         =  9,
+	/// ENOMEM
+	OutOfMemory               = 12,
+	/// EACCES
+	PermissionDenied          = 13,
+	/// EFAULT
+	InvalidPointer            = 14,
+	/// EINVAL
+	InvalidArgument           = 22,
+	/// ENOTSOCK
+	NotSocket                 = 88,
+	/// EPROTONOSUPPORT
+	ProtocolNotSupported      = 93,
+	/// EAFNOSUPPORT
+	AddressFamilyNotSupported = 97,
+	/// EADDRINUSE
+	AddressInUse              = 98,
+
+	pub fn fromError( self: Error ) Errno {
+		return switch ( self ) {
+			Error.BadFileDescriptor         => .BadFileDescriptor,
+			Error.OutOfMemory               => .OutOfMemory,
+			Error.PermissionDenied          => .PermissionDenied,
+			Error.InvalidPointer            => .InvalidPointer,
+			Error.InvalidArgument           => .InvalidArgument,
+			Error.NotSocket                 => .NotSocket,
+			Error.ProtocolNotSupported      => .ProtocolNotSupported,
+			Error.AddressFamilyNotSupported => .AddressFamilyNotSupported,
+			Error.AddressInUse              => .AddressInUse
+		};
+	}
+
+	pub fn getResult( self: Errno ) isize {
 		return -@intFromEnum( self );
 	}
 };
@@ -49,14 +84,17 @@ pub const Task = struct {
 	stackPtr: x86.StackPtr = undefined,
 	kstack: []align(4096) u8 = undefined,
 	ustack: []align(4096) u8 = undefined,
-	fd: std.ArrayListUnmanaged( ?vfs.FileDescriptor ) = undefined,
-	errno: Error = .Success,
+	fd: std.ArrayListUnmanaged( ?*vfs.FileDescriptor ) = undefined,
+	errno: Errno = .Success,
 
 	fn init( self: *Task ) std.mem.Allocator.Error!void {
 		self.kstack = try root.kheap.alignedAlloc( u8, 4096, KS );
+		errdefer root.kheap.free( self.kstack );
 		self.ustack = try root.kheap.alignedAlloc( u8, 4096, US );
+		errdefer root.kheap.free( self.ustack );
 
-		self.fd = try std.ArrayListUnmanaged( ?vfs.FileDescriptor ).initCapacity( root.kheap, 3 );
+		self.fd = try std.ArrayListUnmanaged( ?*vfs.FileDescriptor ).initCapacity( root.kheap, 3 );
+		errdefer self.fd.deinit( root.kheap );
 		self.fd.appendAssumeCapacity( kernelTask.fd.items[0] );
 		self.fd.appendAssumeCapacity( kernelTask.fd.items[1] );
 		self.fd.appendAssumeCapacity( kernelTask.fd.items[2] );
@@ -114,8 +152,9 @@ pub const Task = struct {
 		asm volatile ( "task_end:" );
 	}
 
-	pub fn park( self: *Task ) void {
-		self.status = .Wait;
+	pub fn park( self: *Task, waitOn: StatusWait ) void {
+		// root.log.printUnsafe( "park:{}\n", .{ self.id } );
+		self.status = .{ .Wait = waitOn };
 		if ( currentTask == self ) {
 			asm volatile ( "int $0x20" );
 		}
@@ -134,6 +173,28 @@ pub const Task = struct {
 		asm volatile ( "jmp task_end" );
 		x86.halt();
 	}
+
+	pub fn addFd( self: *Task, node: *vfs.Node ) error{ OutOfMemory }!isize {
+		for ( self.fd.items, 0.. ) |*fd, i| {
+			if ( fd.* == null ) {
+				fd.* = try node.open();
+				return @bitCast( i );
+			}
+		}
+
+		( try self.fd.addOne( root.kheap ) ).* = try node.open();
+		return @bitCast( self.fd.items.len - 1 );
+	}
+
+	pub fn getFd( self: *Task, fd: u32 ) error{ BadFileDescriptor }!*vfs.FileDescriptor {
+		if ( fd < self.fd.items.len ) {
+			if ( self.fd.items[fd] ) |out| {
+				return out;
+			}
+		}
+
+		return error.BadFileDescriptor;
+	}
 };
 
 var tasks: [8]?Task = undefined;
@@ -146,10 +207,12 @@ pub fn init() std.mem.Allocator.Error!void {
 		.status = .Kernel,
 		.kernelMode = true,
 		.entrypoint = undefined,
-		.fd = try std.ArrayListUnmanaged( ?vfs.FileDescriptor ).initCapacity( root.kheap, 3 )
+		.fd = try std.ArrayListUnmanaged( ?*vfs.FileDescriptor ).initCapacity( root.kheap, 3 )
 	};
 	kernelTask = &tasks[0].?;
-	kernelTask.fd.appendNTimesAssumeCapacity( .{ .node = vfs.devNode.resolve( "com0" ).? }, 3 );
+	kernelTask.fd.appendAssumeCapacity( try vfs.devNode.resolve( "com0" ).?.open() );
+	kernelTask.fd.appendAssumeCapacity( try vfs.devNode.resolve( "com0" ).?.open() );
+	kernelTask.fd.appendAssumeCapacity( try vfs.devNode.resolve( "com0" ).?.open() );
 
 	for ( 1..tasks.len ) |i| {
 		tasks[i] = null;
@@ -178,30 +241,35 @@ pub fn create( entrypoint: *const fn() void, kernelMode: bool ) *Task {
 	@panic( "Can't create a new task" );
 }
 
+fn countTasks( includeWait: bool ) usize {
+	var out: usize = 0;
+
+	for ( 1..tasks.len ) |i| {
+		if ( tasks[i] ) |*t| {
+			if ( t.status != .Kernel and t.status != .Done and ( includeWait or t.status != .Wait ) ) {
+				out += 1;
+			} else if ( t.status == .Done ) {
+				t.deinit();
+				tasks[tcs] = null;
+			}
+		}
+	}
+
+	return out;
+}
+
 pub fn schedule() void {
 	x86.disableInterrupts();
 	irq.set( irq.Interrupt.Pit, scheduler );
 
 	while ( true ) {
 		currentTask = kernelTask;
-		// ticks = @import( "std" ).math.maxInt( @TypeOf( ticks ) );
+		// ticks = std.math.maxInt( @TypeOf( ticks ) );
 		asm volatile ( "int %[irq]" :: [irq] "n" ( irq.Interrupt.Pit ) );
 
 		// root.log.printUnsafe( "S ", .{} );
 
-		var c: usize = 0;
-		for ( 1..tasks.len ) |i| {
-			if ( tasks[i] ) |*t| {
-				if ( t.status == .Start or t.status == .Active ) {
-					c += 1;
-				} else if ( t.status == .Done ) {
-					t.deinit();
-					tasks[tcs] = null;
-				}
-			}
-		}
-
-		if ( c == 0 ) {
+		if ( countTasks( true ) == 0 ) {
 			break;
 		}
 	}
@@ -211,35 +279,59 @@ pub fn schedule() void {
 	x86.enableInterrupts();
 }
 
-// var ticks: u1 = @import( "std" ).math.maxInt( u1 );
+// var ticks: u4 = std.math.maxInt( u4 );
 fn scheduler( _: *x86.State ) void {
+	// if ( currentTask.status != .Active ) {
+	// 	ticks = std.math.maxInt( @TypeOf( ticks ) );
+	// }
+
 	// ticks +%= 1;
 	// if ( ticks > 0 ) {
-	//	return;
+	// 	return;
 	// }
 
 	// root.log.printUnsafe( "s ", .{} );
-	for ( 0..tasks.len ) |_| {
-		tcs +%= 1;
+	while ( true ) {
+		for ( 0..tasks.len ) |_| {
+			tcs +%= 1;
 
-		if ( tasks[tcs] ) |*t| {
-			if ( t.status != .Start and t.status != .Active ) {
-				if ( t.status == .Done ) {
+			if ( tasks[tcs] ) |*t| {
+				if ( t.status == .Start or t.status == .Active ) {
+					//root.log.printUnsafe( "sched:{}\n", .{ t.id } );
+					if ( currentTask != t ) {
+						t.enter();
+					}
+
+					return;
+				} else if ( t.status == .Wait ) {
+					if ( t.status.Wait == .fd and t.status.Wait.fd.ready ) {
+						t.status.Wait.fd.ready = false;
+						t.status = .Active;
+						// root.log.printUnsafe( "unpark:{}\n", .{ t.id } );
+					}
+				} else if ( t.status == .Done ) {
 					t.deinit();
 					tasks[tcs] = null;
 				}
-
-				continue;
 			}
+		}
 
-			x86.out( u8, irq.Register.Pic1Command, irq.Command.EndOfInterrupt );
-			t.enter();
+		if ( countTasks( true ) == 0 ) {
 			return;
+		} else if ( countTasks( false ) == 0 ) {
+			irq.mask( irq.Interrupt.Pit );
+			// root.log.printUnsafe( "hlt\n", .{} );
+			x86.enableInterrupts();
+			asm volatile ( "hlt" );
+			x86.disableInterrupts();
+			irq.unmask( irq.Interrupt.Pit );
 		}
 	}
 }
 
-fn run() void {
+fn run() noreturn {
 	currentTask.entrypoint();
-	_ = @import( "./syscall.zig" ).call( .Exit, .{ 0 } );
+	while ( true ) {
+		_ = @import( "./syscall.zig" ).call( .Exit, .{ 0 } );
+	}
 }

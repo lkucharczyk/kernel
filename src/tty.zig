@@ -136,7 +136,7 @@ pub fn write( _: ?*anyopaque, msg: []const u8 ) error{}!usize {
 	return msg.len;
 }
 
-fn writeFs( _: *vfs.Node, _: u32, msg: []const u8 ) u32 {
+fn writeFs( _: *vfs.Node, _: *vfs.FileDescriptor, msg: []const u8 ) u32 {
 	return write( null, msg ) catch unreachable;
 }
 

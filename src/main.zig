@@ -32,7 +32,6 @@ export const mbHeader: multiboot.Header align(4) linksection(".multiboot") = mul
 
 pub const kheap = mem.kheapGpa.allocator();
 
-export var kstack: [32 * 1024]u8 align(4096) linksection(".bss.kstack") = undefined;
 extern const ADDR_KSTACK_END: u8;
 
 export fn _start() align(16) linksection(".text.boot") callconv(.Naked) noreturn {
@@ -99,8 +98,8 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	logStreams[0] = tty.stream();
 
 	com.init();
-	if ( com.ports[1] ) |*com1| {
-		logStreams[1] = com1.stream();
+	if ( com.ports[0] ) |*com0| {
+		logStreams[1] = com0.stream();
 	}
 
 	@import( "./idt.zig" ).init();
@@ -162,6 +161,8 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 
 	_ = task.create( @import( "./shell.zig" ).task( "/dev/com0" ), false );
 	_ = task.create( @import( "./shell.zig" ).task( "/dev/com1" ), false );
+	_ = task.create( @import( "./shell.zig" ).task( "/dev/com2" ), false );
+	_ = task.create( @import( "./shell.zig" ).task( "/dev/com3" ), false );
 	// task.create( @import( "./shell.zig" ).task( "/dev/tty0" ), true );
 	task.schedule();
 

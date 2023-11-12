@@ -1,14 +1,13 @@
 const std = @import( "std" );
 const ethernet = @import( "./ethernet.zig" );
-const Device = @import( "./device.zig" ).Device;
-const Interface = @import( "./interface.zig" ).Interface;
+const net = @import( "../net.zig" );
 
 pub const Ethernet = struct {
-	interface: *Interface,
+	interface: *net.Interface,
 	bufFrame: ethernet.FrameStatic = undefined,
 
 	pub fn init( self: *Ethernet ) void {
-		self.interface = @import( "../net.zig" ).createInterface( Device {
+		self.interface = net.createInterface( net.Device {
 			.hwAddr = ethernet.Address.Empty,
 			.context = self,
 			.vtable = .{
@@ -16,7 +15,7 @@ pub const Ethernet = struct {
 			}
 		} );
 
-		self.interface.ipv4Addr = @import( "./ipv4.zig" ).Address.init( .{ 127, 0, 0, 1 } );
+		self.interface.ipv4Addr = net.ipv4.Address.init( .{ 127, 0, 0, 1 } );
 	}
 
 	pub fn send( self: *Ethernet, frame: ethernet.Frame ) void {
@@ -27,6 +26,7 @@ pub const Ethernet = struct {
 			var mbuf: ?[]u8 = self.interface.allocator.alloc( u8, self.bufFrame.len - @sizeOf( ethernet.Header ) ) catch null;
 
 			if ( mbuf ) |buf| {
+				@memcpy( buf, self.bufFrame.body[0..buf.len] );
 				dst.body = ethernet.Body.init( buf );
 			} else {
 				dst.body = ethernet.Body.init( "" );

@@ -39,16 +39,16 @@ pub const Datagram = struct {
 const PORTS_AUTO_START = 1024;
 pub var ports: [0xffff]?*net.Socket = .{ null } ** 0xffff;
 var portCounter: u16 = PORTS_AUTO_START - 1;
-pub fn bind( socket: *net.Socket, sockaddr: ?net.Sockaddr ) bool {
+pub fn bind( socket: *net.Socket, sockaddr: ?net.Sockaddr ) error{ AddressInUse }!void {
 	if ( sockaddr ) |a| {
 		var port = net.util.hton( u16, a.getPort() );
 		if ( port > 0 ) {
 			if ( ports[port] == null ) {
 				ports[port] = socket;
 				socket.address = a;
-				return true;
+				return;
 			} else {
-				return false;
+				return error.AddressInUse;
 			}
 		}
 	}
@@ -66,11 +66,11 @@ pub fn bind( socket: *net.Socket, sockaddr: ?net.Sockaddr ) bool {
 			socket.address.setPort( portCounter );
 			ports[portCounter] = socket;
 
-			return true;
+			return;
 		}
 	}
 
-	return false;
+	return error.AddressInUse;
 }
 
 pub fn send( socket: ?*net.Socket, sockaddr: net.Sockaddr, body: []const u8 ) void {
@@ -79,7 +79,7 @@ pub fn send( socket: ?*net.Socket, sockaddr: net.Sockaddr, body: []const u8 ) vo
 		srcPort = s.address.getPort();
 
 		if ( srcPort == 0 ) {
-			_ = bind( s, null );
+			bind( s, null ) catch unreachable;
 			srcPort = s.address.getPort();
 		}
 

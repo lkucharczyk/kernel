@@ -33,8 +33,10 @@ SECTIONS {
 	.bss ALIGN(4K) : AT(ADDR(.bss) - ADDR_KMAIN_OFFSET) {
 		*(COMMON)
 		*(.bss)
+
+		. = ALIGN(4K);
 		ADDR_KSTACK_START = .;
-		KEEP(*(.bss.kstack))
+		. += 32K;
 		ADDR_KSTACK_END = .;
 	}
 

@@ -19,6 +19,7 @@ pub const Syscall = enum(u32) {
 };
 
 fn handlerIrq( state: *x86.State ) void {
+	var args: [6]usize = .{ state.ebx, state.ecx, state.edx, state.esi, state.edi, state.ebp };
 	const id: Syscall = switch ( state.eax ) {
 		1 => Syscall.Exit,
 		3 => Syscall.Read,
@@ -26,7 +27,7 @@ fn handlerIrq( state: *x86.State ) void {
 		5 => Syscall.Open,
 		6 => Syscall.Close,
 		102 => _: {
-			var args: [*]u32 = @ptrFromInt( state.ecx );
+			var argPtr: [*]u32 = @ptrFromInt( state.ecx );
 			var argCount: u8 = 0;
 			var argId: Syscall = undefined;
 
@@ -50,10 +51,8 @@ fn handlerIrq( state: *x86.State ) void {
 				else => return
 			}
 
-			inline for ( .{ "ebx", "ecx", "edx", "esi", "edi", "ebp" }, 0..6 ) |reg, i| {
-				if ( argCount > i ) {
-					@field( state, reg ) = args[i];
-				}
+			for ( 0..argCount ) |i| {
+				args[i] = argPtr[i];
 			}
 
 			break :_ argId;
@@ -65,218 +64,167 @@ fn handlerIrq( state: *x86.State ) void {
 		else => return
 	};
 
-	state.errNum = @bitCast( handler( id, state.ebx, state.ecx, state.edx, state.esi, state.edi, state.ebp ) );
+	state.eax = @bitCast( handlerWrapper( id, args ) );
 }
 
-fn handler( id: Syscall, arg0: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize ) isize {
-	if ( id != .Read and id != .Write ) {
-		root.log.printUnsafe( "syscall: task:{} {}(", .{ task.currentTask.id, id } );
+fn extractSlice( comptime T: type, ptr: usize, len: usize ) task.Error![]T {
+	if ( ptr == 0 ) {
+		return error.InvalidPointer;
 	}
 
-	var out: isize = switch ( id ) {
+	return @as( [*]u8, @ptrFromInt( ptr ) )[0..len];
+}
+
+fn extractCStr( ptr: usize ) task.Error![]const u8 {
+	if ( ptr == 0 ) {
+		return error.InvalidPointer;
+	}
+
+	const str = @as( [*:0]const u8, @ptrFromInt( ptr ) );
+	return str[0..std.mem.indexOfSentinel( u8, 0, str )];
+}
+
+fn handlerWrapper( id: Syscall, args: [6]usize ) isize {
+	if ( id != .Read and id != .Write ) {
+		root.log.printUnsafe( "syscall: task:{} {s}(", .{ task.currentTask.id, @tagName( id ) } );
+	}
+
+	if ( handler( id, args ) ) |val| {
+		if ( id != .Read and id != .Write ) {
+			root.log.printUnsafe( ") => {}\n", .{ val } );
+		}
+
+		return val;
+	} else |err| {
+		task.currentTask.errno = task.Errno.fromError( err );
+		var val: isize = task.currentTask.errno.getResult();
+
+		if ( id != .Read and id != .Write ) {
+			root.log.printUnsafe( ") => {} ({})\n", .{ val, task.currentTask.errno } );
+		}
+
+		return val;
+	}
+}
+
+fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
+	return switch ( id ) {
 		// read( fd, bufPtr, bufLen )
 		.Read => _: {
-			if ( task.currentTask.fd.items.len > arg0 ) {
-				if ( task.currentTask.fd.items[arg0] ) |fd| {
-					x86.enableInterrupts();
-					var out: isize = @bitCast( fd.read( @as( [*]u8, @ptrFromInt( arg1 ) )[0..arg2] ) );
-					x86.disableInterrupts();
+			const fd = try task.currentTask.getFd( args[0] );
+			var buf = try extractSlice( u8, args[1], args[2] );
 
-					break :_ out;
-				}
-			}
+			const out: isize = @bitCast( fd.read( buf ) );
 
-			task.currentTask.errno = .BadFileDescriptor;
-			break :_ -1;
+			break :_ out;
 		},
 		// write( fd, bufPtr, bufLen )
 		.Write => _: {
-			if ( task.currentTask.fd.items.len > arg0 ) {
-				if ( task.currentTask.fd.items[arg0] ) |fd| {
-					break :_ @bitCast( fd.write( @as( [*]u8, @ptrFromInt( arg1 ) )[0..arg2] ) );
-				}
-			}
+			const fd = try task.currentTask.getFd( args[0] );
+			const buf = try extractSlice( u8, args[1], args[2] );
 
-			task.currentTask.errno = .BadFileDescriptor;
-			break :_ -1;
+			break :_ @bitCast( fd.write( buf ) );
 		},
 		// open( pathPtr, flags, mode )
 		.Open => _: {
-			root.log.printUnsafe( " \"{s}\", {}, {} ", .{ @as( [*:0]u8, @ptrFromInt( arg0 ) ), arg1, arg2 } );
-
-			const pathPtr = @as( [*:0]const u8, @ptrFromInt( arg0 ) );
-			const path = pathPtr[1..std.mem.indexOfSentinel( u8, 0, pathPtr )];
+			const path = ( try extractCStr( args[0] ) )[1..];
+			root.log.printUnsafe( " \"{s}\", {}, {} ", .{ path, args[1], args[2] } );
 
 			if ( @import( "./vfs.zig" ).rootNode.resolveDeep( path ) ) |node| {
-				for ( task.currentTask.fd.items, 0.. ) |*fd, i| {
-					if ( fd.* == null ) {
-						fd.* = .{ .node = node };
-						break :_ @bitCast( i );
-					}
-				}
-
-				( task.currentTask.fd.addOne( root.kheap ) catch unreachable ).* = .{ .node = node };
-				break :_ @bitCast( task.currentTask.fd.items.len - 1 );
+				break :_ task.currentTask.addFd( node );
 			}
 
-			task.currentTask.errno = .PermissionDenied;
-			break :_ -1;
+			break :_ task.Error.PermissionDenied;
 		},
 		// close( fd )
 		.Close => _: {
-			root.log.printUnsafe( " {} ", .{ arg0 } );
+			root.log.printUnsafe( " {} ", .{ args[0] } );
 
-			if ( task.currentTask.fd.items.len > arg0 ) {
-				if ( task.currentTask.fd.items[arg0] != null ) {
-					task.currentTask.fd.items[arg0].?.node.close();
-					task.currentTask.fd.items[arg0] = null;
-					break :_ 0;
-				}
-			}
-
-			task.currentTask.errno = .BadFileDescriptor;
-			break :_ -1;
+			const fd = try task.currentTask.getFd( args[0] );
+			fd.node.close( fd );
+			task.currentTask.fd.items[args[0]] = null;
+			break :_ 0;
 		},
 		// socket( family, type, protocol )
 		.Socket => _: {
-			const family: net.sockaddr.Family = @enumFromInt( arg0 );
-			const protocol: net.ipv4.Protocol = @enumFromInt( arg2 );
-			root.log.printUnsafe( " {}, {}, {} ", .{ family, arg1, protocol } );
+			const family: net.sockaddr.Family = @enumFromInt( args[0] );
+			const protocol: net.ipv4.Protocol = @enumFromInt( args[2] );
+			root.log.printUnsafe( " {}, {}, {} ", .{ family, args[1], protocol } );
 
-			var node = @import( "./net.zig" ).createSocket( family, arg1, protocol ) catch |err| {
-				task.currentTask.errno = switch ( err ) {
-					error.InvalidFamily   => .AdressFamilyNotSupported,
-					error.InvalidFlags    => .InvalidArgument,
-					error.InvalidProtocol => .ProtocolNotSupported
-				};
-
-				break :_ -1;
-			};
-
-			for ( task.currentTask.fd.items, 0.. ) |*fd, i| {
-				if ( fd.* == null ) {
-					fd.* = .{ .node = node };
-					break :_ @bitCast( i );
-				}
-			}
-
-			( task.currentTask.fd.addOne( root.kheap ) catch unreachable ).* = .{ .node = node };
-			break :_ @bitCast( task.currentTask.fd.items.len - 1 );
+			const node = try net.createSocket( family, args[1], protocol );
+			break :_ task.currentTask.addFd( node );
 		},
 		// bind( fd, sockaddrPtr, sockaddrLen )
 		.Bind => _: {
 			var sockaddr: net.Sockaddr = undefined;
 
-			const mlen = @min( @sizeOf( net.Sockaddr ), arg2 );
+			const mlen = @min( @sizeOf( net.Sockaddr ), args[2] );
 			@memcpy(
 				@as( [*]u8, @ptrCast( &sockaddr ) )[0..mlen],
-				@as( [*]const u8, @ptrFromInt( arg1 ) )[0..mlen]
+				@as( [*]const u8, @ptrFromInt( args[1] ) )[0..mlen]
 			);
 
-			root.log.printUnsafe( " {}, {} ", .{ arg0, sockaddr } );
+			root.log.printUnsafe( " {}, {} ", .{ args[0], sockaddr } );
 
-			if ( task.currentTask.fd.items.len > arg0 ) {
-				if ( task.currentTask.fd.items[arg0] ) |fd| {
-					if ( fd.node.ntype == .Socket ) {
-						var socket: *net.Socket = @alignCast( @ptrCast( fd.node.ctx ) );
-						break :_ if ( socket.bind( sockaddr ) ) 0 else -1;
-					} else {
-						task.currentTask.errno = .NotSocket;
-						break :_ -1;
-					}
-				}
-			}
+			const fd = try task.currentTask.getFd( args[0] );
+			const socket = fd.getSocket() orelse break :_ task.Error.NotSocket;
 
-			task.currentTask.errno = .BadFileDescriptor;
-			break :_ -1;
+			try socket.bind( sockaddr );
+			break :_ 0;
 		},
 		// sendto( fd, bufPtr, bufLen, flags, sockaddrPtr, sockaddrLen )
 		.SendTo => _: {
-			var buf = @as( [*]const u8, @ptrFromInt( arg1 ) )[0..arg2];
+			var buf: []const u8 = try extractSlice( u8, args[1], args[2] );
 			var sockaddr: net.Sockaddr = undefined;
 
-			const mlen = @min( @sizeOf( net.Sockaddr ), arg5 );
+			const mlen = @min( @sizeOf( net.Sockaddr ), args[5] );
 			@memcpy(
 				@as( [*]u8, @ptrCast( &sockaddr ) )[0..mlen],
-				@as( [*]const u8, @ptrFromInt( arg4 ) )[0..mlen]
+				try extractSlice( u8, args[4], mlen )
 			);
 
-			root.log.printUnsafe( " {}, \"{s}\", {}, {} ", .{ arg0, buf, arg3, sockaddr } );
+			root.log.printUnsafe( " {}, \"{s}\", {}, {} ", .{ args[0], buf, args[3], sockaddr } );
 
-			if ( task.currentTask.fd.items.len > arg0 ) {
-				if ( task.currentTask.fd.items[arg0] ) |fd| {
-					if ( fd.node.ntype == .Socket ) {
-						var socket: *net.Socket = @alignCast( @ptrCast( fd.node.ctx ) );
+			const fd = try task.currentTask.getFd( args[0] );
+			const socket = fd.getSocket() orelse break :_ task.Error.NotSocket;
 
-						break :_ socket.sendto( sockaddr, buf );
-					} else {
-						task.currentTask.errno = .NotSocket;
-						break :_ -1;
-					}
-				}
-			}
-
-			task.currentTask.errno = .BadFileDescriptor;
-			break :_ -1;
+			break :_ socket.sendto( sockaddr, buf );
 		},
 		// recvfrom( fd, bufPtr, bufLen, flags, sockaddrPtr, sockaddrLenPtr )
 		.RecvFrom => _: {
-			var buf = @as( [*]u8, @ptrFromInt( arg1 ) )[0..arg2];
-			var addr: ?*align(1) net.Sockaddr = @ptrFromInt( arg4 );
-			var addrlen: ?*align(1) u32 = @ptrFromInt( arg5 );
+			var buf = try extractSlice( u8, args[1], args[2] );
+			var addr: ?*align(1) net.Sockaddr = @ptrFromInt( args[4] );
+			var addrlen: ?*align(1) u32 = @ptrFromInt( args[5] );
+			root.log.printUnsafe( " {}, {*}, {}, {}, {*}, {*} ", .{ args[0], buf, buf.len, args[3], addr, addrlen } );
 
-			root.log.printUnsafe( " {}, {*}, {}, {}, {*}, {*} ", .{ arg0, buf, buf.len, arg3, addr, addrlen } );
-			if ( task.currentTask.fd.items.len > arg0 ) {
-				if ( task.currentTask.fd.items[arg0] ) |fd| {
-					if ( fd.node.ntype == .Socket ) {
-						var socket: *net.Socket = @alignCast( @ptrCast( fd.node.ctx ) );
-						x86.enableInterrupts();
-						var out = socket.recvfrom();
-						x86.disableInterrupts();
+			const fd = try task.currentTask.getFd( args[0] );
+			const socket = fd.getSocket() orelse break :_ task.Error.NotSocket;
 
-						const blen = @min( out.data.len, buf.len );
-						@memcpy( buf[0..blen], out.data[0..blen] );
+			const out = socket.recvfrom( fd );
 
-						if ( addrlen ) |al| {
-							const mlen = @min( out.srcAddr.getSize(), al.* );
-							if ( addr ) |a| {
-								@memcpy(
-									@as( [*]u8, @ptrCast( a ) )[0..mlen],
-									@as( [*]const u8, @ptrCast( &out.srcAddr ) )[0..mlen]
-								);
-							}
-						}
+			const blen = @min( out.data.len, buf.len );
+			@memcpy( buf[0..blen], out.data[0..blen] );
 
-						socket.alloc.free( out.data );
-
-						break :_ @bitCast( out.data.len );
-					} else {
-						task.currentTask.errno = .NotSocket;
-						break :_ -1;
-					}
+			if ( addrlen ) |al| {
+				const mlen = @min( out.srcAddr.getSize(), al.* );
+				if ( addr ) |a| {
+					@memcpy(
+						@as( [*]u8, @ptrCast( a ) )[0..mlen],
+						@as( [*]const u8, @ptrCast( &out.srcAddr ) )[0..mlen]
+					);
 				}
 			}
 
-			task.currentTask.errno = .BadFileDescriptor;
-			break :_ -1;
+			socket.alloc.free( out.data );
+
+			break :_ @bitCast( out.data.len );
 		},
 		.Exit => {
-			root.log.printUnsafe( " {} ) => noreturn", .{ arg0 } );
-			task.currentTask.exit( arg0 );
+			root.log.printUnsafe( " {} ) => noreturn", .{ args[0] } );
+			task.currentTask.exit( args[0] );
 		},
 		else => -1
 	};
-
-	if ( id != .Read and id != .Write ) {
-		if ( out == -1 ) {
-			out = task.currentTask.errno.getResult();
-			root.log.printUnsafe( ") => {} ({})\n", .{ out, task.currentTask.errno } );
-		} else {
-			root.log.printUnsafe( ") => {}\n", .{ out } );
-		}
-	}
-
-	return out;
 }
 
 pub fn init() void {

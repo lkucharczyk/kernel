@@ -79,9 +79,13 @@ pub const Node = struct {
 		descriptorPool.destroy( fd );
 	}
 
-	pub fn signal( self: *Node ) void {
+	pub fn signal( self: *Node, changes: FileDescriptor.Signal ) void {
 		for ( self.descriptors.items ) |fd| {
-			fd.ready = true;
+			inline for ( @typeInfo( FileDescriptor.Signal ).Struct.fields ) |f| {
+				if ( @field( changes, f.name ) ) |v| {
+					@field( fd.status, f.name ) = v;
+				}
+			}
 		}
 	}
 
@@ -179,12 +183,26 @@ pub const Node = struct {
 };
 
 pub const FileDescriptor = struct {
+	pub const Signal = struct {
+		read: ?bool = null,
+		write: ?bool = null,
+		other: ?bool = null
+	};
+
+	pub const Status = struct {
+		read: bool = false,
+		write: bool = false,
+		other: bool = false
+	};
+
 	node: *Node,
+	status: Status = .{},
 	ready: bool = false,
 	offset: usize = 0,
 
 	fn init( self: *FileDescriptor, node: *Node ) void {
 		self.node = node;
+		self.status = .{};
 		self.ready = false;
 		self.offset = 0;
 	}

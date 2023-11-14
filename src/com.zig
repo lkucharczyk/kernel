@@ -90,6 +90,13 @@ const LineStatus = packed struct(u8) {
 pub var ports: [8]?SerialPort = .{ null } ** 8;
 
 pub const SerialPort = struct {
+	const VTable = vfs.VTable {
+		.open = &fsOpen,
+		.close = &fsClose,
+		.read = &fsRead,
+		.write = &fsWrite
+	};
+
 	address: u16,
 	buffer: RingBuffer( u8, 64 ) = .{},
 	fsNode: vfs.Node = undefined,
@@ -161,12 +168,18 @@ pub const SerialPort = struct {
 	}
 
 	pub fn read( self: *SerialPort, buf: []u8, fd: ?*vfs.FileDescriptor ) usize {
-		self.setInterrupts( .{ .dataAvailable = true } );
-
 		for ( 0..buf.len ) |i| {
 			while ( self.buffer.isEmpty() ) {
+				self.fsNode.signal( .{ .read = false } );
+
+				if ( i > 0 ) {
+					return i;
+				}
+
 				if ( fd ) |wfd| {
-					@import( "./task.zig" ).currentTask.park( .{ .fd = wfd } );
+					@import( "./task.zig" ).currentTask.park(
+						.{ .fd = .{ .ptr = wfd, .status = .{ .read = true } } }
+					);
 				} else {
 					asm volatile ( "hlt" );
 				}
@@ -178,7 +191,10 @@ pub const SerialPort = struct {
 			}
 		}
 
-		self.setInterrupts( .{} );
+		if ( self.buffer.isEmpty() ) {
+			self.fsNode.signal( .{ .read = false } );
+		}
+
 		return buf.len;
 	}
 
@@ -220,9 +236,27 @@ pub const SerialPort = struct {
 	}
 
 	fn irqHandler( self: *SerialPort ) void {
-		while ( self.getLineStatus().dataReady ) {
+		var lineStatus = self.getLineStatus();
+		var nodeStatus = vfs.FileDescriptor.Signal {};
+
+		while ( lineStatus.dataReady ) : ( lineStatus = self.getLineStatus() ) {
 			_ = self.buffer.push( self.in( u8, RegisterOffset.Data ) );
-			self.fsNode.signal();
+			nodeStatus.read = true;
+		}
+
+		nodeStatus.write = lineStatus.txHoldEmpty;
+		self.fsNode.signal( nodeStatus );
+	}
+
+	fn fsOpen( node: *vfs.Node, _: *vfs.FileDescriptor ) void {
+		const self: *SerialPort = @alignCast( @ptrCast( node.ctx ) );
+		self.setInterrupts( .{ .dataAvailable = true } );
+	}
+
+	fn fsClose( node: *vfs.Node ) void {
+		const self: *SerialPort = @alignCast( @ptrCast( node.ctx ) );
+		if ( node.descriptors.items.len == 0 ) {
+			self.setInterrupts( .{} );
 		}
 	}
 
@@ -287,10 +321,7 @@ pub fn init() void {
 		ports[i] = SerialPort.init( f.value );
 
 		if ( ports[i] ) |*port| {
-			port.fsNode.init( 1, &[4:0]u8{ 'c', 'o', 'm', i + '0' }, .CharDevice, port, .{
-				.read = SerialPort.fsRead,
-				.write = SerialPort.fsWrite
-			}  );
+			port.fsNode.init( 1, &[4:0]u8{ 'c', 'o', 'm', i + '0' }, .CharDevice, port, SerialPort.VTable );
 			vfs.devNode.link( &port.fsNode ) catch unreachable;
 		}
 	}

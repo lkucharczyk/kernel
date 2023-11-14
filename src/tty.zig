@@ -124,16 +124,41 @@ fn moveCursor( ncol: u16, nrow: u16 ) void {
 }
 
 pub fn write( _: ?*anyopaque, msg: []const u8 ) error{}!usize {
-	for ( msg ) |c| {
-		if ( c == 0 ) {
+	var i: usize = 0;
+	while ( i < msg.len ) : ( i += 1 ) {
+		if ( msg[i] == 0 ) {
 			break;
-		}
+		} else if ( msg[i] == 0x1b ) {
+			i += 1;
+			if ( std.mem.eql( u8, msg[i..( i + 3 )], "[2K" ) ) {
+				if ( softLF ) {
+					row -= 1;
+				}
 
-		putc( c );
+				for ( ( cols * row )..( cols * ( row + 1 ) ) ) |j| {
+					buf[j] = color | ' ';
+				}
+
+				if ( softLF ) {
+					row += 1;
+				}
+
+				i += 2;
+			} else if ( std.mem.eql( u8, msg[i..( i + 3 )], "[1G" ) ) {
+				col = 0;
+				if ( softLF ) {
+					row -= 1;
+				}
+
+				i += 2;
+			}
+		} else {
+			putc( msg[i] );
+		}
 	}
 
 	moveCursor( col, row );
-	return msg.len;
+	return i;
 }
 
 fn writeFs( _: *vfs.Node, _: *vfs.FileDescriptor, msg: []const u8 ) u32 {

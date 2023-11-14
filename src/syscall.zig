@@ -10,6 +10,7 @@ pub const Syscall = enum(u32) {
 	Write    = 1,
 	Open     = 2,
 	Close    = 3,
+	Poll     = 7,
 	Socket   = 41,
 	SendTo   = 44,
 	RecvFrom = 45,
@@ -57,25 +58,30 @@ fn handlerIrq( state: *x86.State ) void {
 
 			break :_ argId;
 		},
+		168 => Syscall.Poll,
 		359 => Syscall.Socket,
 		361 => Syscall.Bind,
 		369 => Syscall.SendTo,
 		371 => Syscall.RecvFrom,
-		else => return
+		else => {
+			root.log.printUnsafe( "syscall: Unknown:{}\n", .{ state.eax } );
+			state.eax = @as( u32, @bitCast( @as( i32, -1 ) ) );
+			return;
+		}
 	};
 
 	state.eax = @bitCast( handlerWrapper( id, args ) );
 }
 
-fn extractSlice( comptime T: type, ptr: usize, len: usize ) task.Error![]T {
+fn extractSlice( comptime T: type, ptr: usize, len: usize ) error{ InvalidPointer }![]T {
 	if ( ptr == 0 ) {
 		return error.InvalidPointer;
 	}
 
-	return @as( [*]u8, @ptrFromInt( ptr ) )[0..len];
+	return @as( [*]T, @ptrFromInt( ptr ) )[0..len];
 }
 
-fn extractCStr( ptr: usize ) task.Error![]const u8 {
+fn extractCStr( ptr: usize ) error{ InvalidPointer }![]const u8 {
 	if ( ptr == 0 ) {
 		return error.InvalidPointer;
 	}
@@ -128,7 +134,7 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 		// open( pathPtr, flags, mode )
 		.Open => _: {
 			const path = ( try extractCStr( args[0] ) )[1..];
-			root.log.printUnsafe( " \"{s}\", {}, {} ", .{ path, args[1], args[2] } );
+			root.log.printUnsafe( " \"/{s}\", {}, {} ", .{ path, args[1], args[2] } );
 
 			if ( @import( "./vfs.zig" ).rootNode.resolveDeep( path ) ) |node| {
 				break :_ task.currentTask.addFd( node );
@@ -144,6 +150,25 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 			fd.node.close( fd );
 			task.currentTask.fd.items[args[0]] = null;
 			break :_ 0;
+		},
+		// poll( pollfdsPtr, pollfdsLen, timeout )
+		.Poll => _: {
+			const fd = try extractSlice( task.PollFd, args[0], args[1] );
+			const timeout: i32 = @bitCast( args[2] );
+			root.log.printUnsafe( " [{}]{*}, {} ", .{ fd.len, fd.ptr, timeout } );
+
+			if ( fd.len > 0 ) {
+				task.currentTask.park( .{ .poll = .{ .fd = fd } } );
+			}
+
+			var out: i32 = 0;
+			for ( fd ) |f| {
+				if ( @as( u16, @bitCast( f.retEvents ) ) > 0 ) {
+					out +|= 1;
+				}
+			}
+
+			break :_ out;
 		},
 		// socket( family, type, protocol )
 		.Socket => _: {
@@ -195,7 +220,7 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 			var buf = try extractSlice( u8, args[1], args[2] );
 			var addr: ?*align(1) net.Sockaddr = @ptrFromInt( args[4] );
 			var addrlen: ?*align(1) u32 = @ptrFromInt( args[5] );
-			root.log.printUnsafe( " {}, {*}, {}, {}, {*}, {*} ", .{ args[0], buf, buf.len, args[3], addr, addrlen } );
+			root.log.printUnsafe( " {}, [{}]{*}, {}, {*}, {*} ", .{ args[0], buf.len, buf, args[3], addr, addrlen } );
 
 			const fd = try task.currentTask.getFd( args[0] );
 			const socket = fd.getSocket() orelse break :_ task.Error.NotSocket;

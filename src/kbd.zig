@@ -1,6 +1,8 @@
 const std = @import( "std" );
 const irq = @import( "./irq.zig" );
+const vfs = @import( "./vfs.zig" );
 const x86 = @import( "./x86.zig" );
+const RingBuffer = @import( "./util/ringBuffer.zig" ).RingBuffer;
 const Stream = @import( "./util/stream.zig" ).Stream;
 
 const Scancode = struct {
@@ -21,36 +23,66 @@ const ScancodeExt = struct {
 };
 
 const keymap = [_]u8 {
-	0,  // null
-	27, // Escape
+	0,  // 0x00: null
+	27, // 0x01: Escape
 	'1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=',
-	'\x08', // Backspace
+	'\x08', // 0x0e: Backspace
 	'\t',
 	'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']',
 	'\n',
-    0, // Left Control
+	0, // 0x1d: Left Control
 	'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
-	0, // Left Shift
+	0, // 0x2a: Left Shift
 	'\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/',
-	0, // Right Shift
+	0, // 0x36: Right Shift
 	'*', // keypad
-    0, // Left Alt
+	0, // Left Alt
 	' ',
-    0, // CapsLock
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // F1 - F10
-    0, // NumLock
-    0, // ScrollLock
+	0, // CapsLock
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // F1 - F10
+	0, // NumLock
+	0, // ScrollLock
 
 	// keypad
-    '7', '8', '9', '-',
+	'7', '8', '9', '-',
 	'4', '5', '6', '+',
 	'1', '2', '3', '0', '.',
 
 	0, 0, 0, // gap
 	0, 0,    // F11 - F12
-    0, 0, 0, // gap
+	0, 0, 0, // gap
 };
 
+const keymapShift = [keymap.len]u8 {
+	0,  // 0x00: null
+	27, // 0x01: Escape
+	'!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+',
+	'\x08', // 0x0e: Backspace
+	'\t',
+	'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}',
+	'\n',
+	0, // 0x1d: Left Control
+	'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
+	0, // 0x2a: Left Shift
+	'|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?',
+	0, // 0x36: Right Shift
+	'*', // keypad
+	0, // Left Alt
+	' ',
+	0, // CapsLock
+	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // F1 - F10
+	0, // NumLock
+	0, // ScrollLock
+
+	// keypad
+	'7', '8', '9', '-',
+	'4', '5', '6', '+',
+	'1', '2', '3', '0', '.',
+
+	0, 0, 0, // gap
+	0, 0,    // F11 - F12
+	0, 0, 0, // gap
+};
 
 const State = struct {
 	extendedMode: bool = false,
@@ -62,9 +94,10 @@ const State = struct {
 	altLeft: bool      = false,
 	altRight: bool     = false,
 
-	buffer: ?u8        = null,
+	buffer: RingBuffer( u8, 64 ) = .{},
 };
 var state = State {};
+var fsNode: vfs.Node = undefined;
 
 fn onKey( _: *x86.State ) void {
 	var code = x86.in( u8, 0x60 );
@@ -76,7 +109,7 @@ fn onKey( _: *x86.State ) void {
 			.{ ScancodeExt.CtrlRight, &state.ctrlRight },
 			.{ ScancodeExt.AltRight , &state.altRight  },
 		} ) |modifier| {
-			if ( ( code ^ Scancode.Released ) == modifier[0] ) {
+			if ( code == modifier[0] or ( code ^ Scancode.Released ) == modifier[0] ) {
 				modifier[1].* = ( code & Scancode.Released ) == 0;
 				return;
 			}
@@ -90,7 +123,7 @@ fn onKey( _: *x86.State ) void {
 			.{ Scancode.CtrlLeft  , &state.ctrlLeft   },
 			.{ Scancode.AltLeft   , &state.altLeft    },
 		} ) |modifier| {
-			if ( ( code ^ Scancode.Released ) == modifier[0] ) {
+			if ( code == modifier[0] or ( code ^ Scancode.Released ) == modifier[0] ) {
 				modifier[1].* = ( code & Scancode.Released ) == 0;
 				return;
 			}
@@ -100,40 +133,58 @@ fn onKey( _: *x86.State ) void {
 			( code & Scancode.Released ) == 0
 			and code < keymap.len
 		) {
-			const char = keymap[code];
+			const char = ( if ( state.shiftLeft or state.shiftRight ) ( keymapShift ) else ( keymap ) )[code];
 			if ( char != 0 ) {
-				if ( ( state.shiftLeft or state.shiftRight ) and char >= 'a' and char <= 'z' ) {
-					state.buffer = char - 'a' + 'A';
-				} else {
-					state.buffer = char;
-				}
+				_ = state.buffer.push( char );
+				fsNode.signal( .{ .read = true } );
 			}
-		} else if ( ( code & Scancode.Released ) > 0 ) {
-			state.buffer = null;
 		}
 	}
 }
 
 pub fn init() void {
 	irq.set( irq.Interrupt.Keyboard, onKey );
+	fsNode.init( 1, "kbd0", .CharDevice, undefined, .{ .read = &fsRead } );
+	vfs.devNode.link( &fsNode ) catch unreachable;
 }
 
-pub fn read( _: ?*anyopaque, buf: []u8 ) error{}!usize {
-	var i: usize = 0;
-	while ( i < buf.len ) {
-		asm volatile ( "hlt" );
+pub fn read( buf: []u8, fd: ?*vfs.FileDescriptor ) usize {
+	for ( 0..buf.len ) |i| {
+		while ( state.buffer.isEmpty() ) {
+			fsNode.signal( .{ .read = false } );
 
-		if ( state.buffer ) |c| {
-			buf[i] = c;
-			state.buffer = null;
-			i += 1;
+			if ( i > 0 ) {
+				return i;
+			}
+
+			if ( fd ) |wfd| {
+				@import( "./task.zig" ).currentTask.park(
+					.{ .fd = .{ .ptr = wfd, .status = .{ .read = true } } }
+				);
+			} else {
+				asm volatile ( "hlt" );
+			}
 		}
+
+		buf[i] = state.buffer.pop().?;
 	}
 
-	return i;
+	if ( state.buffer.isEmpty() ) {
+		fsNode.signal( .{ .read = false } );
+	}
+
+	return buf.len;
 }
 
-pub fn reader() std.io.Reader( ?*anyopaque, error{}, read ) {
+pub fn fsRead( _: ?*vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) u32 {
+	return read( buf, fd );
+}
+
+pub fn streamRead( _: ?*anyopaque, buf: []u8 ) error{}!usize {
+	return read( buf, null );
+}
+
+pub fn reader() std.io.Reader( ?*anyopaque, error{}, streamRead ) {
 	return .{ .context = null };
 }
 

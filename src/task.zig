@@ -11,9 +11,75 @@ pub var currentTask: *Task = undefined;
 const KS = 32 * 1024;
 const US = 32 * 1024;
 
+const FdWait = struct {
+	ptr: *vfs.FileDescriptor,
+	status: vfs.FileDescriptor.Status,
+
+	pub fn ready( self: FdWait ) bool {
+		return ( !self.status.read or self.ptr.status.read )
+			and ( !self.status.write or self.ptr.status.write )
+			and ( !self.status.other or self.ptr.status.other );
+	}
+};
+
+pub const PollFd = extern struct {
+	const Events = packed struct(u16) {
+		read: bool = false,
+		priority: bool = false,
+		write: bool = false,
+		err: bool = false,
+		_: u12 = 0
+	};
+
+	fd: u32,
+	reqEvents: Events,
+	retEvents: Events,
+
+	pub fn ready( self: *PollFd, task: *Task ) bool {
+		var out: bool = false;
+		self.retEvents = .{};
+
+		if ( task.getFd( self.fd ) catch null ) |fd| {
+			inline for ( .{ "read", "write" } ) |f| {
+				if ( @field( fd.status, f ) and @field( self.reqEvents, f ) ) {
+					@field( self.retEvents, f ) = true;
+					out = true;
+				}
+			}
+		}
+
+		return out;
+	}
+};
+
+const PollWait = struct {
+	fd: []PollFd,
+
+	pub fn ready( self: *PollWait, task: *Task ) bool {
+		var out: bool = false;
+
+		for ( self.fd ) |*fd| {
+			if ( fd.ready( task ) ) {
+				out = true;
+			}
+		}
+
+		return out;
+	}
+};
+
 const StatusWait = union(enum) {
-	fd: *vfs.FileDescriptor,
-	Manual
+	fd: FdWait,
+	poll: PollWait,
+	Manual,
+
+	pub fn ready( self: *StatusWait, task: *Task ) bool {
+		return switch ( self.* ) {
+			.fd => |fd| fd.ready(),
+			.poll => |*poll| poll.ready( task ),
+			else => false
+		};
+	}
 };
 
 const Status = union(enum) {
@@ -95,9 +161,9 @@ pub const Task = struct {
 
 		self.fd = try std.ArrayListUnmanaged( ?*vfs.FileDescriptor ).initCapacity( root.kheap, 3 );
 		errdefer self.fd.deinit( root.kheap );
-		self.fd.appendAssumeCapacity( kernelTask.fd.items[0] );
-		self.fd.appendAssumeCapacity( kernelTask.fd.items[1] );
-		self.fd.appendAssumeCapacity( kernelTask.fd.items[2] );
+		self.fd.appendAssumeCapacity( try kernelTask.fd.items[0].?.node.open() );
+		self.fd.appendAssumeCapacity( try kernelTask.fd.items[1].?.node.open() );
+		self.fd.appendAssumeCapacity( try kernelTask.fd.items[2].?.node.open() );
 
 		self.stackPtr = .{
 			.ebp = @intFromPtr( self.kstack.ptr ) + KS - 4,
@@ -297,15 +363,14 @@ fn scheduler( _: *x86.State ) void {
 
 			if ( tasks[tcs] ) |*t| {
 				if ( t.status == .Start or t.status == .Active ) {
-					//root.log.printUnsafe( "sched:{}\n", .{ t.id } );
+					// root.log.printUnsafe( "sched:{}\n", .{ t.id } );
 					if ( currentTask != t ) {
 						t.enter();
 					}
 
 					return;
 				} else if ( t.status == .Wait ) {
-					if ( t.status.Wait == .fd and t.status.Wait.fd.ready ) {
-						t.status.Wait.fd.ready = false;
+					if ( t.status.Wait.ready( t ) ) {
 						t.status = .Active;
 						// root.log.printUnsafe( "unpark:{}\n", .{ t.id } );
 					}

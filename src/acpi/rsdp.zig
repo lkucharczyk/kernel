@@ -29,11 +29,11 @@ const Rsdp = extern struct {
 	}
 
 	pub fn format( self: Rsdp, _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
-		try std.fmt.format( writer, "{s}{{ .oemId = \"{s}\", .revision = {}, .rdstAddr = {} }}", .{
+		try std.fmt.format( writer, "{s}{{ .oemId = \"{s}\", .revision = {}, .rdstAddr = RSDT@{x:0>8} }}", .{
 			@typeName( Rsdp ),
 			self.oemId,
 			self.revision,
-			self.rsdtAddr
+			self.rsdtAddr + mem.ADDR_KMAIN_OFFSET
 		} );
 	}
 };

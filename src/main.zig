@@ -133,9 +133,15 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 			const rsdt = rsdp.getRsdt();
 			if ( rsdt.validate() ) {
 				log.printUnsafe(
-					"rsdp: {[0]*} {[0]}\nrsdt: {[1]*} {[2]}\n\n",
+					"rsdp: {[0]*} {[0]}\nrsdt: {[1]*} {[2]}\n",
 					.{ rsdp, rsdt, std.fmt.Formatter( @import( "./acpi/rsdt.zig" ).Rsdt.format ) { .data = rsdt } }
 				);
+
+				if ( rsdt.getTable( @import( "./acpi/fadt.zig" ).Fadt ) ) |fadt| {
+					log.printUnsafe( "fadt: {[0]*} {[0]}\n", .{ fadt } );
+				}
+
+				log.printUnsafe( "\n", .{} );
 			} else {
 				log.printUnsafe( "acpi: rsdt validation failed!\n\n", .{} );
 			}
@@ -159,18 +165,14 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 
 	@import( "./vfs.zig" ).printTree( @import( "./vfs.zig" ).rootNode, 0 );
 
-	_ = task.create( @import( "./shell.zig" ).task( "/dev/com0" ), false );
-	_ = task.create( @import( "./shell.zig" ).task( "/dev/com1" ), false );
-	_ = task.create( @import( "./shell.zig" ).task( "/dev/com2" ), false );
-	_ = task.create( @import( "./shell.zig" ).task( "/dev/com3" ), false );
-	// task.create( @import( "./shell.zig" ).task( "/dev/tty0" ), true );
-	task.schedule();
-
-	log.printUnsafe( "\nkbd input:\n", .{} );
-	var buf: [1]u8 = .{ 0 };
-	while ( ( kbd.read( null, &buf ) catch unreachable ) > 0 ) {
-		_ = log.write( &buf ) catch unreachable;
+	inline for ( 0..com.ports.len ) |i| {
+		if ( com.ports[i] ) |_| {
+			const path = std.fmt.comptimePrint( "/dev/com{}", .{ i } );
+			_ = task.create( @import( "./shell.zig" ).task( path, path ), false );
+		}
 	}
+	_ = task.create( @import( "./shell.zig" ).task( "/dev/kbd0", "/dev/tty0" ), false );
+	task.schedule();
 
 	// arch.halt();
 	@panic( "kmain end" );

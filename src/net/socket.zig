@@ -45,7 +45,8 @@ pub const Socket = struct {
 
 		self.address = .{ .ipv4 = .{} };
 		self.node.init( 1, "socket", .Socket, self, .{
-			.close = &deinit
+			.close = &deinit,
+			.read = &read
 		} );
 	}
 
@@ -81,20 +82,37 @@ pub const Socket = struct {
 				.srcAddr = addr
 			} ) catch unreachable
 		) {
-			self.node.signal();
+			self.node.signal( .{ .read = true } );
 		} else {
 			@import( "root" ).log.printUnsafe( "Socket dropped frame!\n", .{} );
 		}
 	}
 
+	pub fn read( node: *vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) u32 {
+		var self: *Socket = @alignCast( @ptrCast( node.ctx ) );
+		const msg = self.recvfrom( fd );
+
+		const blen = @min( msg.data.len, buf.len );
+		@memcpy( buf[0..blen], msg.data[0..blen] );
+		self.alloc.free( msg.data );
+
+		return blen;
+	}
+
 	pub fn recvfrom( self: *Socket, fd: ?*vfs.FileDescriptor ) Message {
 		while ( true ) {
 			if ( self.rxQueue.pop() ) |msg| {
+				if ( self.rxQueue.isEmpty() ) {
+					self.node.signal( .{ .read = false } );
+				}
+
 				return msg;
 			}
 
 			if ( fd ) |wfd| {
-				task.currentTask.park( .{ .fd = wfd } );
+				task.currentTask.park(
+					.{ .fd = .{ .ptr = wfd, .status = .{ .read = true } } }
+				);
 			} else {
 				asm volatile ( "hlt" );
 			}

@@ -40,5 +40,9 @@ pub fn Queue( comptime T: type ) type {
 
 			return null;
 		}
+
+		pub inline fn isEmpty( self: Self ) bool {
+			return self.list.len == 0;
+		}
 	};
 }

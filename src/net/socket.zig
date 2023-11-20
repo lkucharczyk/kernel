@@ -53,7 +53,7 @@ pub const Socket = struct {
 	pub fn deinit( node: *vfs.Node ) void {
 		var self: *Socket = @alignCast( @ptrCast( node.ctx ) );
 
-		var port = net.util.hton( u16, self.address.getPort() );
+		var port = self.address.getPort();
 		if ( port != 0 and self.protocol == .Udp ) {
 			udp.ports[port] = null;
 		}

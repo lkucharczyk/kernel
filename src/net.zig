@@ -3,11 +3,14 @@ const root = @import( "root" );
 const task = @import( "./task.zig" );
 const vfs = @import( "./vfs.zig" );
 const x86 = @import( "./x86.zig" );
+const ksyscall = @import( "./syscall.zig" ).handlerWrapper;
 
+pub const arp = @import( "./net/arp.zig" );
 pub const ethernet = @import( "./net/ethernet.zig" );
 pub const ipv4 = @import( "./net/ipv4.zig" );
 pub const loopback = @import( "./net/loopback.zig" );
 pub const sockaddr = @import( "./net/sockaddr.zig" );
+pub const udp = @import( "./net/udp.zig" );
 pub const util = @import( "./net/util.zig" );
 
 pub const Device = @import( "./net/device.zig" ).Device;
@@ -64,41 +67,44 @@ pub fn destroySocket( socket: *Socket ) void {
 
 pub fn init() std.mem.Allocator.Error!void {
 	sockets = std.heap.MemoryPoolExtra( Socket, .{} ).init( root.kheap );
+
 	loEthernet.init();
 	netTask = task.create( daemon, true );
 }
 
-fn daemon() void {
-	while ( true ) {
-		for ( interfaces.items ) |*interface| {
-			interface.process();
-		}
+fn daemon( _: usize, _: [*]const [*:0]const u8 ) callconv(.C) void {
+	var pollfd = std.ArrayListUnmanaged( task.PollFd ).initCapacity( root.kheap, interfaces.items.len ) catch unreachable;
+	for ( interfaces.items ) |*interface| {
+		pollfd.append( root.kheap, .{
+			.fd = @bitCast( task.currentTask.addFd( &interface.fsNode ) catch unreachable ),
+			.reqEvents = .{ .read = true }
+		} ) catch unreachable;
+	}
 
-		x86.disableInterrupts();
-		var park: bool = true;
+	while ( ksyscall( .Poll, .{ @intFromPtr( pollfd.items.ptr ), pollfd.items.len, @bitCast( @as( i32, -1 ) ), undefined, undefined, undefined } ) > 0 ) {
+		task.currentTask.park( .{ .poll = .{ .fd = pollfd.items } } );
+
 		for ( interfaces.items ) |*interface| {
-			if ( interface.rxQueue.len > 0 ) {
-				park = false;
-				break;
+			while ( interface.pop() ) |frame| {
+				x86.disableInterrupts();
+				recv( interface, frame );
+				x86.enableInterrupts();
 			}
 		}
-
-		if ( park ) {
-			netTask.park( .Manual );
-		}
-		x86.enableInterrupts();
 	}
 }
 
-pub fn recv( interface: *Interface, etherType: ethernet.EtherType, data: []const u8 ) void {
+pub fn recv( interface: *Interface, frame: *align(2) ethernet.FrameOpaque ) void {
+	// root.log.printUnsafe( "frame: {}\n", .{ frame } );
+
 	if (
-		switch ( etherType ) {
-			.Arp => @import( "./net/arp.zig" ).recv( interface, data ),
-			.Ipv4 => ipv4.recv( interface, data ),
-			.Ipv6 => return,
-			else => {
-				root.log.printUnsafe( "[net.recv] Unsupported EtherType: {}\n", .{ etherType } );
-				return;
+		switch ( frame.getHeader().protocol ) {
+			.Arp => arp.recv( interface, frame.getBody() ),
+			.Ipv4 => ipv4.recv( interface, frame.getBody() ),
+			.Ipv6 => null,
+			else => _: {
+				root.log.printUnsafe( "[net.recv] Unsupported EtherType: {}\n", .{ frame.getHeader().protocol } );
+				break :_ null;
 			}
 		}
 	) |entryL4| {
@@ -107,10 +113,11 @@ pub fn recv( interface: *Interface, etherType: ethernet.EtherType, data: []const
 			.Udp => @import( "./net/udp.zig" ).recv( entryL4 ),
 			else => {
 				root.log.printUnsafe( "[net.recv] Unsupported IpProto: {}\n", .{ entryL4.protocol } );
-				return;
 			}
 		}
 	}
+
+	interface.allocator.free( frame.getBuffer() );
 }
 
 pub fn send( protocol: ipv4.Protocol, addr: Sockaddr, body: util.NetBody ) void {

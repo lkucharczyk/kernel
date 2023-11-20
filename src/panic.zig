@@ -46,50 +46,30 @@ const Symbol = struct {
 	name: []const u8
 };
 
-fn readAddress( buf: []const u8 ) u32 {
-	var out: u32 = 0;
-
-	for ( buf[0..4], 0..4 ) |c, i| {
-		out |= @as( u32, @intCast( c ) ) << ( @as( u5, @intCast( 3 - i ) ) * 8 );
-	}
-
-	return out;
-}
-
 fn getSymbol( address: usize ) ?Symbol {
-	var o: usize = 0;
 	var i: usize = 0;
 
 	// Avoid comptime optimization
 	var ptr: []const u8 = @ptrCast( &symbolTable );
 	while (
 		ptr.len > 8
-		and std.mem.order( u8, ptr[0..4], &[_]u8{ 0xde, 0xad, 0xbe, 0xef } ) != std.math.Order.eq
-		and std.mem.order( u8, ptr[1..5], &[_]u8{ 0xde, 0xad, 0xbe, 0xef } ) != std.math.Order.eq
-		and std.mem.order( u8, ptr[2..6], &[_]u8{ 0xde, 0xad, 0xbe, 0xef } ) != std.math.Order.eq
-		and std.mem.order( u8, ptr[3..7], &[_]u8{ 0xde, 0xad, 0xbe, 0xef } ) != std.math.Order.eq
+		and !std.mem.eql( u8, ptr[0..4], &[_]u8{ 0xde, 0xad, 0xbe, 0xef } )
+		and !std.mem.eql( u8, ptr[1..5], &[_]u8{ 0xde, 0xad, 0xbe, 0xef } )
+		and !std.mem.eql( u8, ptr[2..6], &[_]u8{ 0xde, 0xad, 0xbe, 0xef } )
+		and !std.mem.eql( u8, ptr[3..7], &[_]u8{ 0xde, 0xad, 0xbe, 0xef } )
 	) {
 		var symbol = Symbol {
-			.address = readAddress( ptr[0..4] ),
-			.size    = readAddress( ptr[4..8] ),
-			.name    = ptr[8..8]
+			.address = @byteSwap( @as( *const align(1) u32, @ptrCast( &ptr[0] ) ).* ),
+			.size    = @byteSwap( @as( *const align(1) u32, @ptrCast( &ptr[4] ) ).* ),
+			.name    = std.mem.sliceTo( ptr[8..], '\n' )
 		};
-
-		o += 8;
-		while ( ptr[o] != '\n' ) {
-			o += 1;
-			symbol.name.len += 1;
-		}
 
 		if ( i > 0 and address >= symbol.address and ( symbol.address + symbol.size ) >= address ) {
 			return symbol;
 		}
 
-		o += 1;
 		i += 1;
-
-		ptr = ptr[o..];
-		o = 0;
+		ptr = ptr[( 9 + symbol.name.len )..];
 	}
 
 	return null;
@@ -102,7 +82,9 @@ pub fn printStack() void {
 	while ( si.next() ) |ra| {
 		root.log.printUnsafe( "[0x{x:0>8}] {s}\n", .{
 			@as( u32, @truncate( ra ) ),
-			if ( getSymbol( ra ) ) |s| ( s.name ) else ( "<unknown>" )
+			if ( getSymbol( ra ) ) |s| ( s.name )
+				else if ( ra < @import( "./mem.zig" ).ADDR_KMAIN_OFFSET ) ( "<task:unknown>" )
+				else ( "<unknown>" )
 		} );
 	}
 }
@@ -122,12 +104,7 @@ pub fn panic( msg: []const u8, trace: ?*std.builtin.StackTrace, retAddr: ?usize 
 
 	inPanic = true;
 
-	tty.setColor( .Blue, .White );
-	tty.setCursor( .Disabled );
-	if ( @import( "./com.zig" ).ports[1] ) |com| {
-		_ = com.write( "\x1b[44m\x1b[97m" );
-	}
-	root.log.printUnsafe( "\n!!! Kernel panic: {s}\n\nStack trace:\n", .{ msg } );
+	root.log.printUnsafe( "\x1b[44m" ++ "\x1b[97m" ++ "\x1b[?25l" ++ "\n!!! Kernel panic: {s}\n\nStack trace:\n", .{ msg } );
 	printStack();
 
 	// QEMU shutdown

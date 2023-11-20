@@ -1,39 +1,62 @@
 const std = @import( "std" );
 const Errno = @import( "./task.zig" ).Errno;
 
+pub usingnamespace @import( "./api/import.zig" );
+
+const OsError = error {
+	SyscallError
+};
+
+fn osRead( fd: i32, buf: []u8 ) OsError!usize {
+	return h( std.os.system.read( fd, buf.ptr, buf.len ) );
+}
+
+fn osWrite( fd: i32, buf: []const u8 ) OsError!usize {
+	return h( std.os.system.write( fd, buf.ptr, buf.len ) );
+}
+
+const stdin = std.io.Reader( i32, OsError, osRead ) { .context = 0 };
+const stdout = std.io.Writer( i32, anyerror, osWrite ) { .context = 1 };
+const stderr = std.io.Writer( i32, anyerror, osWrite ) { .context = 2 };
+
 const linux = std.os.linux;
+const system = std.os.system;
 
 const BUFSIZE = 79;
 
 inline fn write( buf: []const u8 ) void {
-	_ = linux.write( 1, buf.ptr, buf.len );
+	_ = stdout.write( buf ) catch unreachable;
 }
 
 inline fn print( comptime fmt: []const u8, args: anytype ) void {
-	std.fmt.format( std.io.Writer( i32, anyerror, writeStream ) { .context = 1 }, fmt, args ) catch unreachable;
+	std.fmt.format( stdout, fmt, args ) catch unreachable;
 }
 
-fn writeStream( fd: i32, buf: []const u8 ) anyerror!usize {
-	return linux.write( fd, buf.ptr, buf.len );
-}
-
-fn shell( devIn: [:0]const u8, devOut: [:0]const u8 ) void {
+pub fn main() anyerror!void {
 	const SYSCALL_ERR: usize = @bitCast( @as( isize, -1 ) );
 
-	_ = linux.close( 0 );
-	_ = linux.open( devIn.ptr, std.os.linux.O.RDONLY, 0 );
-	_ = linux.close( 1 );
-	_ = linux.open( devOut.ptr, std.os.linux.O.WRONLY, 0 );
-	_ = linux.close( 2 );
-	_ = linux.open( devOut.ptr, std.os.linux.O.WRONLY, 0 );
+	if ( std.os.argv.len >= 2 ) {
+		_ = try h( system.close( 0 ) );
+		_ = try h( system.open( std.os.argv[1], std.os.linux.O.RDONLY, 0 ) );
+	}
+	if ( std.os.argv.len >= 3 ) {
+		_ = try h( system.close( 1 ) );
+		_ = try h( system.open( std.os.argv[2], std.os.linux.O.WRONLY, 0 ) );
+		_ = try h( system.close( 2 ) );
+		_ = try h( system.open( std.os.argv[2], std.os.linux.O.WRONLY, 0 ) );
+	}
 	write( "> " );
 
 	var buf: [BUFSIZE]u8 = .{ 0 } ** BUFSIZE;
 	var p: usize = 0;
-	var s: usize = linux.read( 0, &buf, 1 );
-	while ( s != SYSCALL_ERR ) : ( s = linux.read( 0, @ptrCast( buf[p..] ), buf.len - p ) ) {
+	var s: usize = try stdin.read( &buf );
+
+	while ( s != SYSCALL_ERR ) : ( s = try stdin.read( buf[p..] ) ) {
 		if ( s > 0 ) {
-			if ( buf[p] == 0x08 ) { // \b
+			if ( p > 0 and buf[p] == 0x03 ) { // ctrl-c
+				write( "\x1b[7m" ++ "^C" ++ "\x1b[0m" ++ "\n" );
+				p = 0;
+			} else if ( buf[p] == 0x08 ) { // \b
 				p -|= 1;
 			} else if ( buf[p] == '\n' ) {
 				write( "\n" );
@@ -60,7 +83,7 @@ fn shell( devIn: [:0]const u8, devOut: [:0]const u8 ) void {
 	}
 }
 
-fn h( retval: usize ) error{ SyscallError }!usize {
+fn h( retval: usize ) OsError!usize {
 	const i: isize = @bitCast( retval );
 	if ( i <= -1 and i >= -1024 ) {
 		print( "error: {}\n", .{ @as( Errno, @enumFromInt( -i ) ) } );
@@ -70,13 +93,17 @@ fn h( retval: usize ) error{ SyscallError }!usize {
 	return retval;
 }
 
-fn process( cmd: []const u8 ) error{ SyscallError }!void {
+fn process( cmd: []const u8 ) OsError!void {
 	var iter = std.mem.tokenizeScalar( u8, cmd, ' ' );
 
 	if ( iter.next() ) |cmd0| {
 		if ( std.mem.eql( u8, cmd0, "exit" ) ) {
 			write( "bye!\n" );
 			linux.exit( 0 );
+		} else if ( std.mem.eql( u8, cmd0, "kpanic" ) ) {
+			asm volatile ( "int $0x03" );
+		} else if ( std.mem.eql( u8, cmd0, "panic" ) ) {
+			@panic( "Manual panic" );
 		} else if ( std.mem.eql( u8, cmd0, "help" ) ) {
 			var cmd1 = iter.next() orelse "";
 			if ( std.mem.eql( u8, cmd1, "recvudp" ) ) {
@@ -86,7 +113,7 @@ fn process( cmd: []const u8 ) error{ SyscallError }!void {
 			} else if ( std.mem.eql( u8, cmd1, "sendudp" ) ) {
 				write( "sendudp [ipv4 address] [port] [data...]\n" );
 			} else {
-				write( "commands: recvudp, recvudpd, sendudp, exit\n" );
+				write( "commands: recvudp, recvudpd, sendudp, exit, kpanic, panic\n" );
 			}
 		} else if ( std.mem.eql( u8, cmd0, "recvudp" ) ) {
 			const sock: i32 = @bitCast( try h( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) ) );
@@ -134,7 +161,7 @@ fn process( cmd: []const u8 ) error{ SyscallError }!void {
 				for ( fds ) |fd| {
 					if ( ( fd.revents & linux.POLL.IN ) > 0 ) {
 						if ( fd.fd == 0 ) {
-							if ( try h( linux.read( 0, &buf, 1 ) ) > 0 and buf[0] == 'x' ) {
+							if ( try h( linux.read( 0, &buf, 1 ) ) > 0 and buf[0] == 0x03 ) {
 								return;
 							}
 						} else {
@@ -156,12 +183,4 @@ fn process( cmd: []const u8 ) error{ SyscallError }!void {
 			_ = try h( linux.close( sock ) );
 		}
 	}
-}
-
-pub fn task( comptime devIn: [:0]const u8, comptime devOut: [:0]const u8 ) fn() void {
-	return struct {
-		fn stub() void {
-			shell( devIn, devOut );
-		}
-	}.stub;
 }

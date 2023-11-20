@@ -215,12 +215,16 @@ pub const FileDescriptor = struct {
 		return null;
 	}
 
-	pub fn read( self: *FileDescriptor, buf: []u8 ) u32 {
+	pub fn read( self: *FileDescriptor, buf: []u8 ) error{}!u32 {
 		return self.node.read( self, buf );
 	}
 
 	pub fn write( self: *FileDescriptor, buf: []const u8 ) u32 {
 		return self.node.write( self, buf );
+	}
+
+	pub fn reader( self: *FileDescriptor ) std.io.Reader( *FileDescriptor, error{}, read ) {
+		return .{ .context = self };
 	}
 };
 
@@ -243,7 +247,7 @@ pub fn printTree( node: *Node, indent: usize ) void {
 }
 
 var descriptorPool: std.heap.MemoryPoolExtra( FileDescriptor, .{} ) = undefined;
-var rootVfs: RootVfs = undefined;
+pub var rootVfs: RootVfs = undefined;
 pub var rootNode: *Node = undefined;
 pub var devNode: *Node = undefined;
 

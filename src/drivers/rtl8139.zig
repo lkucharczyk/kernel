@@ -2,6 +2,7 @@ const std = @import( "std" );
 const root = @import( "root" );
 const ethernet = @import( "../net/ethernet.zig" );
 const irq = @import( "../irq.zig" );
+const mem = @import( "../mem.zig" );
 const net = @import( "../net.zig" );
 const pci = @import( "../pci.zig" );
 const x86 = @import( "../x86.zig" );
@@ -44,7 +45,7 @@ const TxStatus = packed struct(u32) {
 	fifoUnderrun: bool = false,
 	/// readonly
 	txOk: bool = false,
-	earlyTxThreashold: u6 = 0,
+	earlyTxThreshold: u6 = 0,
 	_: u2 = 0,
 	/// readonly
 	collisionCount: u4 = 0,
@@ -253,7 +254,7 @@ const Rtl8139 = struct {
 
 		self.outT( TxConfig { .autoCrc = true } );
 
-		self.out( u32, RegisterOffset.RxBufferAddress, @intFromPtr( &self.rxBuffer.data ) - 0xc000_0000 );
+		self.out( u32, RegisterOffset.RxBufferAddress, @intFromPtr( &self.rxBuffer.data ) - mem.ADDR_KMAIN_OFFSET );
 		self.outT( RxConfig {
 			.acceptAll = true,
 			.acceptDirect = true,
@@ -278,7 +279,7 @@ const Rtl8139 = struct {
 
 			bufFrame.header.src = self.macAddr;
 
-			self.out( u32, RegisterOffset.TxAddress[i], @intFromPtr( bufFrame ) - 0xc000_0000 );
+			self.out( u32, RegisterOffset.TxAddress[i], bufFrame.getDmaAddress() );
 			self.out( TxStatus, RegisterOffset.TxStatus[i], .{
 				.length = @truncate( bufFrame.len ),
 				.own = false,
@@ -311,22 +312,11 @@ const Rtl8139 = struct {
 			while ( status.rxOk and !self.inT( Command ).bufferEmpty ) {
 				var dataHeader = self.rxBuffer.read( DataHeader );
 				if ( dataHeader.isValid() ) {
-					if ( self.interface.recv() ) |frame| {
-						frame.header = self.rxBuffer.read( ethernet.Header );
-						var mbuf: ?[]u8 = self.interface.allocator.alloc( u8, dataHeader.len - @sizeOf( ethernet.Header ) - 4 ) catch null;
-
-						if ( mbuf ) |buf| {
-							frame.body = ethernet.Body.init( buf );
-
-							self.rxBuffer.readBytes( buf );
-							self.rxBuffer.seek( 4 + 3 );
-							self.rxBuffer.pos &= ~@as( u32, 3 );
-						} else {
-							frame.body = ethernet.Body.init( "" );
-							self.rxBuffer.seek( dataHeader.len - @sizeOf( ethernet.Header ) + 3 );
-							self.rxBuffer.pos &= ~@as( u32, 3 );
-							root.log.printUnsafe( "Driver dropped frame!\n", .{} );
-						}
+					if ( self.interface.push( dataHeader.len - 4 ) ) |frame| {
+						frame.getHeader().* = self.rxBuffer.read( ethernet.Header );
+						self.rxBuffer.readBytes( frame.getBody() );
+						self.rxBuffer.seek( 4 + 3 );
+						self.rxBuffer.pos &= ~@as( u32, 3 );
 					} else {
 						self.rxBuffer.seek( dataHeader.len - @sizeOf( ethernet.Header ) + 3 );
 						self.rxBuffer.pos &= ~@as( u32, 3 );

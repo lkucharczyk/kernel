@@ -133,8 +133,12 @@ fn onKey( _: *x86.State ) void {
 			( code & Scancode.Released ) == 0
 			and code < keymap.len
 		) {
-			const char = ( if ( state.shiftLeft or state.shiftRight ) ( keymapShift ) else ( keymap ) )[code];
+			var char = ( if ( state.shiftLeft or state.shiftRight ) ( keymapShift ) else ( keymap ) )[code];
 			if ( char != 0 ) {
+				if ( state.ctrlLeft and ( char == 'c' or char == 'C' ) ) {
+					char = 0x03;
+				}
+
 				_ = state.buffer.push( char );
 				fsNode.signal( .{ .read = true } );
 			}

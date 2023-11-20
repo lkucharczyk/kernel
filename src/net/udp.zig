@@ -40,37 +40,37 @@ const PORTS_AUTO_START = 1024;
 pub var ports: [0xffff]?*net.Socket = .{ null } ** 0xffff;
 var portCounter: u16 = PORTS_AUTO_START - 1;
 pub fn bind( socket: *net.Socket, sockaddr: ?net.Sockaddr ) error{ AddressInUse }!void {
+	const port = _: {
+		if ( sockaddr ) |a| {
+			var port = a.getPort();
+			if ( port > 0 ) {
+				if ( ports[port] == null ) {
+					break :_ port;
+				} else {
+					return error.AddressInUse;
+				}
+			}
+		}
+
+		for ( 0..( 0xffff - PORTS_AUTO_START ) ) |_| {
+			portCounter +%= 1;
+			if ( portCounter == 0 ) {
+				portCounter = PORTS_AUTO_START;
+			}
+
+			if ( ports[portCounter] == null ) {
+				break :_ portCounter;
+			}
+		}
+
+		return error.AddressInUse;
+	};
+
 	if ( sockaddr ) |a| {
-		var port = net.util.hton( u16, a.getPort() );
-		if ( port > 0 ) {
-			if ( ports[port] == null ) {
-				ports[port] = socket;
-				socket.address = a;
-				return;
-			} else {
-				return error.AddressInUse;
-			}
-		}
+		socket.address = a;
 	}
-
-	for ( 0..( 0xffff - PORTS_AUTO_START ) ) |_| {
-		portCounter +%= 1;
-		if ( portCounter == 0 ) {
-			portCounter = PORTS_AUTO_START;
-		}
-
-		if ( ports[portCounter] == null ) {
-			if ( sockaddr ) |a| {
-				socket.address = a;
-			}
-			socket.address.setPort( portCounter );
-			ports[portCounter] = socket;
-
-			return;
-		}
-	}
-
-	return error.AddressInUse;
+	socket.address.setPort( port );
+	ports[port] = socket;
 }
 
 pub fn send( socket: ?*net.Socket, sockaddr: net.Sockaddr, body: []const u8 ) void {
@@ -91,7 +91,7 @@ pub fn send( socket: ?*net.Socket, sockaddr: net.Sockaddr, body: []const u8 ) vo
 	var datagram = Datagram {
 		.header = .{
 			.srcPort = srcPort,
-			.dstPort = net.util.hton( u16, sockaddr.getPort() )
+			.dstPort = sockaddr.getPort()
 		},
 		.body = body
 	};
@@ -109,7 +109,7 @@ pub fn recv( entry: net.EntryL4 ) void {
 	const header: *const align( 1 ) Header = @ptrCast( entry.data );
 	if ( ports[net.util.hton( u16, header.dstPort )] ) |port| {
 		var addr = entry.sockaddr;
-		addr.setPort( header.srcPort );
+		addr.setPortNet( header.srcPort );
 		port.internalRecv( addr, entry.data[@sizeOf( Header )..] );
 	}
 }

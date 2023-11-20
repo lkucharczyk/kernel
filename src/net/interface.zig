@@ -1,12 +1,11 @@
 const std = @import( "std" );
 const root = @import( "root" );
-const arp = @import( "./arp.zig" );
 const ethernet = @import( "./ethernet.zig" );
-const icmp = @import( "./icmp.zig" );
 const ipv4 = @import( "./ipv4.zig" );
 const net = @import( "../net.zig" );
-const netUtil = @import( "./util.zig" );
+const vfs = @import( "../vfs.zig" );
 const Device = @import( "./device.zig" ).Device;
+const RingBuffer = @import( "../util/ringBuffer.zig" ).RingBuffer;
 
 var subnet: u8 = 100;
 pub const Interface = struct {
@@ -14,9 +13,8 @@ pub const Interface = struct {
 	allocator: std.mem.Allocator,
 	device: Device,
 
-	rxQueue: std.DoublyLinkedList( ethernet.Frame ) = .{},
-	rxQueueLimit: usize = 8,
-	rxFramePool: std.heap.MemoryPoolExtra( std.DoublyLinkedList( ethernet.Frame ).Node, .{} ),
+	fsNode: vfs.Node = undefined,
+	rxQueue: RingBuffer( *align(2) ethernet.FrameOpaque, 8 ),
 
 	ipv4Addr: ?ipv4.Address = null,
 
@@ -25,19 +23,17 @@ pub const Interface = struct {
 		self.allocator = self.arena.allocator();
 
 		self.rxQueue = .{};
-		self.rxQueueLimit = 8;
-		self.rxFramePool = std.heap.MemoryPoolExtra( std.DoublyLinkedList( ethernet.Frame ).Node, .{} )
-			.initPreheated( allocator, self.rxQueueLimit )
-			catch unreachable;
 
 		self.ipv4Addr = ipv4.Address.init( .{ 192, 168, subnet, 2 } );
 		subnet += 1;
+
+		self.fsNode.init( subnet - 101, &[4:0]u8 { 'n', 'e', 't', '0' + ( subnet - 101 ) }, .Unknown, self, .{} );
+		vfs.devNode.link( &self.fsNode ) catch unreachable;
 	}
 
 	pub fn deinit( self: *Interface ) void {
 		self.arena.deinit();
-		self.rxFramePool.deinit();
-		self.rxQueueLimit = 0;
+		self.rxQueue.deinit();
 	}
 
 	pub inline fn send( self: Interface, dest: ethernet.Address, proto: ethernet.EtherType, body: ethernet.Body ) void {
@@ -50,41 +46,33 @@ pub const Interface = struct {
 		} );
 	}
 
-	pub fn recv( self: *Interface ) ?*ethernet.Frame {
-		if ( self.rxQueue.len < self.rxQueueLimit ) {
-			var node = self.rxFramePool.create() catch unreachable;
-			self.rxQueue.append( node );
-			net.netTask.status = .Active;
-			return &node.data;
+	pub fn push( self: *Interface, len: u16 ) ?*align(2) ethernet.FrameOpaque {
+		const buf = self.allocator.alignedAlloc( u8, 2, len + 2 ) catch unreachable;
+		errdefer self.allocator.free( buf );
+
+		const frame: *align(2) ethernet.FrameOpaque = @ptrCast( buf.ptr );
+		if ( self.rxQueue.push( frame ) ) {
+			self.fsNode.signal( .{ .read = true } );
+			frame.getBodyLen().* = len - @sizeOf( ethernet.Header );
+			return frame;
 		} else {
 			root.log.printUnsafe( "Interface dropped frame!\n", .{} );
+			self.allocator.free( buf );
 		}
 
 		return null;
 	}
 
-	pub fn process( self: *Interface ) void {
-		while ( self.rxQueue.popFirst() ) |node| {
-			var frame = node.data;
-			// root.log.printUnsafe( "frame: {}\n", .{ frame } );
-
-			var parts: usize = 0;
-			for ( frame.body.parts ) |mpart| {
-				if ( mpart != null ) {
-					parts += 1;
-				}
-			}
-			std.debug.assert( parts == 1 );
-
-			net.recv( self, frame.header.protocol, frame.body.parts[0].? );
-
-			for ( frame.body.parts ) |mpart| {
-				if ( mpart ) |part| {
-					self.allocator.free( part );
-				}
+	pub fn pop( self: *Interface ) ?*align(2) ethernet.FrameOpaque {
+		if ( self.rxQueue.pop() ) |frame| {
+			if ( self.rxQueue.isEmpty() ) {
+				self.fsNode.signal( .{ .read = false } );
 			}
 
-			self.rxFramePool.destroy( node );
+			return frame;
 		}
+
+		self.fsNode.signal( .{ .read = false } );
+		return null;
 	}
 };

@@ -103,6 +103,17 @@ pub const Info = extern struct {
 
 		return null;
 	}
+
+	pub fn getModules( self: Info ) ?[]const Module {
+		if ( self.flags.modules ) {
+			return @as(
+				[*]const Module,
+				@ptrFromInt( mem.ADDR_KMAIN_OFFSET + self.modsAddr )
+			)[0..self.modsCount];
+		}
+
+		return null;
+	}
 };
 
 pub const MemoryMapEntry = extern struct {
@@ -121,5 +132,32 @@ pub const MemoryMapEntry = extern struct {
 
 	pub fn format( self: MemoryMapEntry, _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
 		try std.fmt.format( writer, "{x:0>8}-{x:0>8} {}", .{ self.addr, self.addr + self.len - 1, self.mtype } );
+	}
+};
+
+pub const Module = extern struct {
+	addrStart: u32 align(1),
+	addrEnd: u32 align(1),
+	cmdline: u32 align(1),
+	pad: u32 align(1),
+
+	pub fn getCmdline( self: Module ) ?[*:0]const u8 {
+		if ( self.cmdline != 0 ) {
+			return @ptrFromInt( mem.ADDR_KMAIN_OFFSET + self.cmdline );
+		}
+
+		return null;
+	}
+
+	pub fn getData( self: Module ) []u8 {
+		return @as( [*]u8, @ptrFromInt( mem.ADDR_KMAIN_OFFSET + self.addrStart ) )[0..( self.addrEnd - self.addrStart )];
+	}
+
+	pub fn format( self: Module, _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
+		try std.fmt.format(
+			writer,
+			"{x:0>8}-{x:0>8} \"{s}\"",
+			.{ self.addrStart, self.addrEnd - 1, self.getCmdline().? }
+		);
 	}
 };

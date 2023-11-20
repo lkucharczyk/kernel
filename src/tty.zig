@@ -128,9 +128,9 @@ pub fn write( _: ?*anyopaque, msg: []const u8 ) error{}!usize {
 	while ( i < msg.len ) : ( i += 1 ) {
 		if ( msg[i] == 0 ) {
 			break;
-		} else if ( msg[i] == 0x1b ) {
-			i += 1;
-			if ( std.mem.eql( u8, msg[i..( i + 3 )], "[2K" ) ) {
+		} else if ( std.mem.startsWith( u8, msg[i..], "\x1b[" ) ) {
+			i += 2;
+			if ( std.mem.startsWith( u8, msg[i..], "2K" ) ) {
 				if ( softLF ) {
 					row -= 1;
 				}
@@ -143,14 +143,32 @@ pub fn write( _: ?*anyopaque, msg: []const u8 ) error{}!usize {
 					row += 1;
 				}
 
-				i += 2;
-			} else if ( std.mem.eql( u8, msg[i..( i + 3 )], "[1G" ) ) {
+				i += 1;
+			} else if ( std.mem.startsWith( u8, msg[i..], "1G" ) ) {
 				col = 0;
 				if ( softLF ) {
 					row -= 1;
 				}
 
+				i += 1;
+			} else if ( std.mem.startsWith( u8, msg[i..], "0m" ) ) {
+				color = 0x0700;
+				i += 1;
+			} else if ( std.mem.startsWith( u8, msg[i..], "7m" ) ) {
+				color = ( ( color << 4 ) & 0xf000 ) | ( ( color >> 4 ) & 0x0f00 );
+				i += 1;
+			} else if ( std.mem.startsWith( u8, msg[i..], "44m" ) ) {
+				color = ( color & 0x0f00 ) | ( @as( u16, @intFromEnum( Color.Blue ) ) << 12 );
 				i += 2;
+			} else if ( std.mem.startsWith( u8, msg[i..], "97m" ) ) {
+				color = ( color & 0xf000 ) | ( @as( u16, @intFromEnum( Color.White ) ) << 8 );
+				i += 2;
+			} else if ( std.mem.startsWith( u8, msg[i..], "?25h" ) ) {
+				setCursor( .Thin );
+				i += 3;
+			} else if ( std.mem.startsWith( u8, msg[i..], "?25l" ) ) {
+				setCursor( .Disabled );
+				i += 3;
 			}
 		} else {
 			putc( msg[i] );

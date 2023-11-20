@@ -6,6 +6,7 @@ const mem = @import( "./mem.zig" );
 const syscall = @import( "./syscall.zig" );
 const task = @import( "./task.zig" );
 const tty = @import( "./tty.zig" );
+const vfs = @import( "./vfs.zig" );
 const multiboot = @import( "./multiboot.zig" );
 const fmtUtil = @import( "./util/fmt.zig" );
 const Stream = @import( "./util/stream.zig" ).Stream;
@@ -20,9 +21,7 @@ pub const os = struct {
 		pub const page_allocator = mem.kheapFba.allocator();
 	};
 
-	pub const system = struct {
-		pub const sockaddr = std.os.linux.sockaddr;
-	};
+	pub const system = @import( "./api/system.zig" );
 };
 
 export const mbHeader: multiboot.Header align(4) linksection(".multiboot") = multiboot.Header.init( .{
@@ -38,7 +37,7 @@ export fn _start() align(16) linksection(".text.boot") callconv(.Naked) noreturn
 	// enable paging
 	asm volatile (
 		\\ movl %[ptr], %%cr3
-		:: [ptr] "{ecx}" ( @intFromPtr( &mem.pagingDir ) )
+		:: [ptr] "{ecx}" ( @intFromPtr( &mem._pagingDir ) )
 	);
 	asm volatile (
 		\\ movl %%cr4, %%ecx
@@ -77,6 +76,10 @@ export fn _startHigh() align(16) linksection(".text") callconv(.Naked) noreturn 
 	arch.halt();
 }
 
+inline fn ktry( val: anytype ) @typeInfo( @TypeOf( val ) ).ErrorUnion.payload {
+	return val catch |err| @panic( @errorName( err ) );
+}
+
 export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") noreturn {
 	@import( "./gdt.zig" ).init();
 
@@ -89,10 +92,10 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 		\\ kmain_pm:
 	);
 
-	mem.pagingDir.entries[0].flags.present = false;
+	mem._pagingDir.entries[0].flags.present = false;
 	asm volatile ( "invlpg (0)" );
 
-	@import( "./vfs.zig" ).init() catch unreachable;
+	ktry( vfs.init() );
 
 	tty.init();
 	logStreams[0] = tty.stream();
@@ -109,6 +112,7 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 
 	mem.init();
 
+	var shell: ?[]const u8 = null;
 	if ( mbMagic == multiboot.Info.MAGIC ) {
 		log.printUnsafe( "multiboot: {x:0>8}\n{?}\nbootloader: {}\ncmdline: {?}\n", .{
 			mbMagic, mbInfo,
@@ -120,6 +124,30 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 			log.printUnsafe( "mmap:\n", .{} );
 			for ( mmap ) |entry| {
 				log.printUnsafe( "    - {}\n", .{ entry } );
+			}
+		}
+
+		if ( mbInfo.?.getModules() ) |modules| {
+			log.printUnsafe( "modules:\n", .{} );
+			const binNode: *vfs.Node = ktry( vfs.rootNode.mkdir( "bin" ) );
+			const modulesNode: *vfs.Node = ktry( vfs.rootNode.mkdir( "mods" ) );
+
+			for ( modules, 0.. ) |module, i| {
+				log.printUnsafe( "    - {}\n", .{ module } );
+
+				const name = [4:0]u8 { 'm', 'o', 'd', '0' + @as( u8, @truncate( i ) ) };
+				ktry( modulesNode.link(
+					ktry( vfs.rootVfs.createRoFile( &name, module.getData() ) )
+				) );
+
+				if ( module.getCmdline() ) |cmdline| {
+					if ( std.mem.endsWith( u8, std.mem.sliceTo( cmdline, 0 ), "shell.elf" ) ) {
+						shell = module.getData();
+						ktry( binNode.link(
+							ktry( vfs.rootVfs.createRoFile( "shell", module.getData() ) )
+						) );
+					}
+				}
 			}
 		}
 
@@ -153,25 +181,33 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	}
 
 	@import( "./pit.zig" ).init( 100 );
-	@import( "./pci.zig" ).init() catch unreachable;
+	ktry( @import( "./pci.zig" ).init() );
 	kbd.init();
 	log.printUnsafe( "\n", .{} );
 
 	syscall.init();
-	task.init() catch unreachable;
+	ktry( task.init() );
 
-	@import( "./net.zig" ).init() catch unreachable;
-	@import( "./drivers/rtl8139.zig" ).init() catch unreachable;
+	ktry( @import( "./net.zig" ).init() );
+	ktry( @import( "./drivers/rtl8139.zig" ).init() );
+	log.printUnsafe( "\n", .{} );
 
 	@import( "./vfs.zig" ).printTree( @import( "./vfs.zig" ).rootNode, 0 );
+	log.printUnsafe( "\n", .{} );
 
-	inline for ( 0..com.ports.len ) |i| {
-		if ( com.ports[i] ) |_| {
-			const path = std.fmt.comptimePrint( "/dev/com{}", .{ i } );
-			_ = task.create( @import( "./shell.zig" ).task( path, path ), false );
+	if ( shell ) |buf| {
+		var elf = std.io.fixedBufferStream( buf );
+
+		inline for ( 0..com.ports.len ) |i| {
+			if ( com.ports[i] ) |_| {
+				const path = std.fmt.comptimePrint( "/dev/com{}", .{ i } );
+				_ = ktry( task.createElf( &elf, &.{ "/bin/shell", path, path } ) );
+			}
 		}
+
+		_ = ktry( task.createElf( &elf, &.{ "/bin/shell", "/dev/kbd0", "/dev/tty0" } ) );
 	}
-	_ = task.create( @import( "./shell.zig" ).task( "/dev/kbd0", "/dev/tty0" ), false );
+
 	task.schedule();
 
 	// arch.halt();

@@ -64,7 +64,7 @@ pub const Frame = struct {
 	header: Header,
 	body: Body,
 
-	pub fn len( self: Frame ) usize {
+	pub fn len( self: Frame ) u16 {
 		var out: usize = @sizeOf( Header ) + self.body.len();
 
 		std.debug.assert( out <= MAX_LENGTH );
@@ -86,7 +86,31 @@ pub const Frame = struct {
 };
 
 pub const FrameStatic = extern struct {
+	len: u16,
 	header: Header,
 	body: [Frame.MAX_LENGTH - @sizeOf( Header )]u8,
-	len: usize
+
+	pub fn getDmaAddress( self: *const FrameStatic ) usize {
+		return @intFromPtr( self ) + @offsetOf( FrameStatic, "header" ) - @import( "../mem.zig" ).ADDR_KMAIN_OFFSET;
+	}
+};
+
+pub const FrameOpaque = opaque {
+	pub inline fn getHeader( self: *align(2) FrameOpaque ) *Header {
+		return @ptrCast( @as( [*]u16, @ptrCast( self ) ) + 1 );
+	}
+
+	pub inline fn getBody( self: *align(2) FrameOpaque ) []align(2) u8 {
+		const offset = @sizeOf( u16 ) + @sizeOf( Header );
+		std.debug.assert( offset % 2 == 0 );
+		return @as( [*]align(2) u8, @ptrCast( self ) )[offset..( offset + self.getBodyLen().* )];
+	}
+
+	pub inline fn getBodyLen( self: *align(2) FrameOpaque ) *u16 {
+		return @ptrCast( self );
+	}
+
+	pub inline fn getBuffer( self: *align(2) FrameOpaque ) []align(2) u8 {
+		return @as( [*]align(2) u8, @ptrCast( self ) )[0..( @sizeOf( u16 ) + @sizeOf( Header ) + self.getBodyLen().* )];
+	}
 };

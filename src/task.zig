@@ -2,14 +2,15 @@ const std = @import( "std" );
 const root = @import( "root" );
 const gdt = @import( "./gdt.zig" );
 const irq = @import( "./irq.zig" );
+const mem = @import( "./mem.zig" );
 const vfs = @import( "./vfs.zig" );
 const x86 = @import( "./x86.zig" );
 
 pub var kernelTask: *Task = undefined;
 pub var currentTask: *Task = undefined;
 
-const KS = 32 * 1024;
-const US = 32 * 1024;
+const KS = 64 * 1024;
+const US = 64 * 1024;
 
 const FdWait = struct {
 	ptr: *vfs.FileDescriptor,
@@ -33,7 +34,7 @@ pub const PollFd = extern struct {
 
 	fd: u32,
 	reqEvents: Events,
-	retEvents: Events,
+	retEvents: Events = .{},
 
 	pub fn ready( self: *PollFd, task: *Task ) bool {
 		var out: bool = false;
@@ -78,6 +79,14 @@ const StatusWait = union(enum) {
 			.fd => |fd| fd.ready(),
 			.poll => |*poll| poll.ready( task ),
 			else => false
+		};
+	}
+
+	pub fn format( self: StatusWait, _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
+		try switch ( self ) {
+			.fd => |fd| std.fmt.format( writer, "fd:{s}", .{ fd.ptr.node.name } ),
+			.poll => std.fmt.format( writer, "poll", .{} ),
+			.Manual => std.fmt.format( writer, "manual", .{} )
 		};
 	}
 };
@@ -146,10 +155,13 @@ pub const Task = struct {
 	id: u8,
 	status: Status,
 	kernelMode: bool,
-	entrypoint: *const fn() void,
+	entrypoint: *const fn( argc: usize, argv: [*]const [*:0]const u8 ) callconv(.C) void,
 	stackPtr: x86.StackPtr = undefined,
 	kstack: []align(4096) u8 = undefined,
 	ustack: []align(4096) u8 = undefined,
+	args: []const [*:0]const u8 = undefined,
+	memBreak: usize = 0,
+	memPages: std.ArrayListUnmanaged( u10 ) = undefined,
 	fd: std.ArrayListUnmanaged( ?*vfs.FileDescriptor ) = undefined,
 	errno: Errno = .Success,
 
@@ -158,6 +170,23 @@ pub const Task = struct {
 		errdefer root.kheap.free( self.kstack );
 		self.ustack = try root.kheap.alignedAlloc( u8, 4096, US );
 		errdefer root.kheap.free( self.ustack );
+		@memset( self.ustack, 0 );
+
+		self.memPages = try std.ArrayListUnmanaged( u10 ).initCapacity( root.kheap, 1 );
+		errdefer {
+			for ( self.memPages.items ) |i| {
+				mem.freePhysical( i );
+			}
+
+			self.memPages.deinit( root.kheap );
+		}
+
+		if ( !self.kernelMode ) {
+			self.memPages.appendAssumeCapacity( try mem.allocPhysical() );
+		}
+
+		self.args.ptr = undefined;
+		self.args.len = 0;
 
 		self.fd = try std.ArrayListUnmanaged( ?*vfs.FileDescriptor ).initCapacity( root.kheap, 3 );
 		errdefer self.fd.deinit( root.kheap );
@@ -199,12 +228,45 @@ pub const Task = struct {
 	}
 
 	fn deinit( self: *Task ) void {
+		for ( self.memPages.items ) |i| {
+			mem.freePhysical( i );
+		}
+
+		self.memPages.deinit( root.kheap );
+
 		root.kheap.free( self.ustack );
 		root.kheap.free( self.kstack );
 	}
 
+	pub fn map( self: *Task ) void {
+		// root.log.printUnsafe( "task.map: {any}\n", .{ self.memPages.items } );
+		for ( self.memPages.items, 0.. ) |page, i| {
+			mem.pagingDir.entries[i] = .{
+				.addressLow = page,
+				.flags = .{
+					.user = true,
+					.present = true,
+					.writeable = true,
+					.hugePage = true
+				}
+			};
+
+			asm volatile ( "invlpg (%[page])" :: [page] "r" ( i ) );
+		}
+	}
+
+	pub fn unmap( self: *Task ) void {
+		for ( 0..self.memPages.items.len ) |i| {
+			mem.pagingDir.entries[i].flags.present = false;
+			asm volatile ( "invlpg (%[page])" :: [page] "r" ( i ) );
+		}
+	}
+
 	fn enter( self: *Task ) void {
 		gdt.tss.esp0 = @intFromPtr( self.kstack.ptr ) + KS - ( 9 * 4 );
+
+		currentTask.unmap();
+		self.map();
 
 		currentTask.stackPtr = x86.StackPtr.get();
 		currentTask = self;
@@ -219,7 +281,7 @@ pub const Task = struct {
 	}
 
 	pub fn park( self: *Task, waitOn: StatusWait ) void {
-		// root.log.printUnsafe( "park:{}\n", .{ self.id } );
+		// root.log.printUnsafe( "park:{} {}\n", .{ self.id, waitOn } );
 		self.status = .{ .Wait = waitOn };
 		if ( currentTask == self ) {
 			asm volatile ( "int $0x20" );
@@ -231,6 +293,7 @@ pub const Task = struct {
 		self.status = .Done;
 		root.log.printUnsafe( "\nTask {} exited with code {}.\n", .{ self.id, code } );
 
+		self.unmap();
 		currentTask = self;
 		kernelTask.stackPtr.set();
 		gdt.tss.esp0 = 0;
@@ -285,7 +348,7 @@ pub fn init() std.mem.Allocator.Error!void {
 	}
 }
 
-pub fn create( entrypoint: *const fn() void, kernelMode: bool ) *Task {
+pub fn create( entrypoint: *const fn( argc: usize, argv: [*]const [*:0]const u8 ) callconv(.C) void, kernelMode: bool ) *Task {
 	for ( 0..tasks.len ) |_| {
 		tcc +%= 1;
 
@@ -305,6 +368,39 @@ pub fn create( entrypoint: *const fn() void, kernelMode: bool ) *Task {
 	}
 
 	@panic( "Can't create a new task" );
+}
+
+pub fn createElf( stream: anytype, args: []const [*:0]const u8 ) !void {
+	const header = try std.elf.Header.read( stream );
+	var task = create( @ptrFromInt( @as( usize, @truncate( header.entry ) ) ), false );
+	task.args = try root.kheap.dupe( [*:0]const u8, args );
+	var sections = header.section_header_iterator( stream );
+
+	x86.disableInterrupts();
+	task.map();
+
+	while ( sections.next() catch |err| return err ) |section| {
+		if ( ( section.sh_flags & std.elf.SHF_ALLOC ) > 0 ) {
+			var ptr = @as( [*]u8, @ptrFromInt( @as( usize, @truncate( section.sh_addr ) ) ) )[0..@truncate( section.sh_size )];
+
+			task.memBreak = std.mem.alignForward( usize, @max( task.memBreak, @intFromPtr( ptr.ptr + ptr.len ) ), 4096 );
+			while ( task.memBreak >= 0x40_0000 * task.memPages.items.len ) {
+				try task.memPages.append( root.kheap, try mem.allocPhysical() );
+				task.map();
+			}
+
+			if ( section.sh_type == std.elf.SHT_NOBITS ) {
+				@memset( ptr, 0 );
+			} else if ( section.sh_type != std.elf.SHT_NULL ) {
+				try stream.seekableStream().seekTo( section.sh_offset );
+				_ = try stream.reader().read( ptr );
+			}
+
+		}
+	}
+
+	task.unmap();
+	x86.enableInterrupts();
 }
 
 fn countTasks( includeWait: bool ) usize {
@@ -395,8 +491,8 @@ fn scheduler( _: *x86.State ) void {
 }
 
 fn run() noreturn {
-	currentTask.entrypoint();
+	currentTask.entrypoint( currentTask.args.len, currentTask.args.ptr );
 	while ( true ) {
-		_ = @import( "./syscall.zig" ).call( .Exit, .{ 0 } );
+		std.os.system.exit( 0 );
 	}
 }

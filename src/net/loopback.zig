@@ -21,16 +21,9 @@ pub const Ethernet = struct {
 	pub fn send( self: *Ethernet, frame: ethernet.Frame ) void {
 		frame.copyTo( &self.bufFrame );
 
-		if ( self.interface.recv() ) |dst| {
-			dst.header = self.bufFrame.header;
-			var mbuf: ?[]u8 = self.interface.allocator.alloc( u8, self.bufFrame.len - @sizeOf( ethernet.Header ) ) catch null;
-
-			if ( mbuf ) |buf| {
-				@memcpy( buf, self.bufFrame.body[0..buf.len] );
-				dst.body = ethernet.Body.init( buf );
-			} else {
-				dst.body = ethernet.Body.init( "" );
-			}
+		if ( self.interface.push( frame.len() ) ) |dst| {
+			dst.getHeader().* = self.bufFrame.header;
+			@memcpy( dst.getBody(), self.bufFrame.body[0..frame.body.len()] );
 		}
 	}
 };

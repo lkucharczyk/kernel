@@ -1,11 +1,13 @@
 const std = @import( "std" );
+const net = @import( "../net.zig" );
 const netUtil = @import( "./util.zig" );
 
 pub const Family = enum(u16) {
-	Unspecified =  0,
-	Unix        =  1,
-	Ipv4        =  2,
+	Unspecified = 0,
+	Unix        = 1,
+	Ipv4        = 2,
 	Ipv6        = 10,
+	Packet      = 17,
 	_
 };
 
@@ -40,6 +42,24 @@ pub const Ipv6 = extern struct {
 	scope: u32
 };
 
+pub const Packet = extern struct {
+	const Type = enum(u8) {
+		LocalHost = 0,
+		Broadcast = 1,
+		Multicast = 2,
+		OtherHost = 3,
+		_
+	};
+
+	family: Family = .Packet,
+	protocol: net.ethernet.EtherType,
+	index: u32,
+	hwType: net.arp.HwType,
+	ptype: Type,
+	hwAddrLen: u8,
+	hwAddr: [6]u8
+};
+
 pub const Sockaddr = extern union {
 	unknown: Unknown,
 	unix: Unix,
@@ -47,14 +67,18 @@ pub const Sockaddr = extern union {
 	ipv6: Ipv6,
 
 	pub fn getPort( self: Sockaddr ) u16 {
-		return switch ( self.unknown.family ) {
+		return net.util.hton( u16, switch ( self.unknown.family ) {
 			.Ipv4 => self.ipv4.port,
 			.Ipv6 => self.ipv6.port,
 			else => 0
-		};
+		} );
 	}
 
-	pub fn setPort( self: *align(4) Sockaddr, port: u16 ) void {
+	pub inline fn setPort( self: *align(4) Sockaddr, port: u16 ) void {
+		self.setPortNet( net.util.hton( u16, port ) );
+	}
+
+	pub fn setPortNet( self: *align(4) Sockaddr, port: u16 ) void {
 		switch ( self.unknown.family ) {
 			.Ipv4 => { self.ipv4.port = port; },
 			.Ipv6 => { self.ipv6.port = port; },

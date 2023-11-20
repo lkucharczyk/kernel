@@ -11,6 +11,7 @@ fn getQemu( b: *std.Build, comptime arch: std.Target.Cpu.Arch, comptime debug: b
 		"sh", "-c",
 		bin
 			++ " -kernel ./zig-out/bin/kernel.elf"
+			++ " -initrd ./zig-out/bin/shell.elf"
 			++ " -vga virtio"
 			++ " -device isa-debug-exit"
 			++ ( " -serial vc" ** 4 )
@@ -47,11 +48,19 @@ pub fn build( b: *std.Build ) !void {
 		.target = target,
 		.optimize = optimize
 	} );
-
 	kernel.code_model = .kernel;
-	kernel.linkage = .static;
 	kernel.setLinkerScript( .{ .path = "src/linker.ld" } );
 	b.installArtifact( kernel );
+
+	const shell = b.addExecutable( .{
+		.name = "shell.elf",
+		.root_source_file = .{ .path = "src/shell.zig" },
+		.single_threaded = true,
+		.linkage = .static,
+		.target = target,
+		.optimize = optimize
+	} );
+	b.installArtifact( shell );
 
 	const embedSymbols = b.addSystemCommand( &.{
 		"sh", "-c",
@@ -62,7 +71,7 @@ pub fn build( b: *std.Build ) !void {
 			++ "| sed -nr 's/^([0-9a-f]+).*?\\t([0-9a-f]+) (.+)$/\\1 \\2 \\3/p'"
 			++ "| sort"
 			++ "| tee ./zig-cache/symbolmap.txt"
-			++ "| grep -vP '__anon_\\d+|\\d+\\.stub'"
+			++ "| grep -vP '__anon_\\d+|\\d+\\.stub|hash_map'"
 			++ "| sed -r 's/Allocator\\(\\.\\{[^}]+\\}\\)/Allocator(.{ ... })/'"
 			++ "| tee ./zig-cache/symbolmap-filtered.txt"
 			++ "| LC_CTYPE=c awk '{" ++

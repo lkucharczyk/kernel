@@ -2,6 +2,7 @@ const std = @import( "std" );
 const root = @import( "root" );
 const irq = @import( "./irq.zig" );
 const task = @import( "./task.zig" );
+const mem = @import( "./mem.zig" );
 const net = @import( "./net.zig" );
 const x86 = @import( "./x86.zig" );
 
@@ -11,6 +12,7 @@ pub const Syscall = enum(u32) {
 	Open     = 2,
 	Close    = 3,
 	Poll     = 7,
+	Brk      = 12,
 	Socket   = 41,
 	SendTo   = 44,
 	RecvFrom = 45,
@@ -27,6 +29,7 @@ fn handlerIrq( state: *x86.State ) void {
 		4 => Syscall.Write,
 		5 => Syscall.Open,
 		6 => Syscall.Close,
+		45 => Syscall.Brk,
 		102 => _: {
 			var argPtr: [*]u32 = @ptrFromInt( state.ecx );
 			var argCount: u8 = 0;
@@ -64,7 +67,7 @@ fn handlerIrq( state: *x86.State ) void {
 		369 => Syscall.SendTo,
 		371 => Syscall.RecvFrom,
 		else => {
-			root.log.printUnsafe( "syscall: Unknown:{}\n", .{ state.eax } );
+			root.log.printUnsafe( "syscall: task:{} Unknown:{}\n", .{ task.currentTask.id, state.eax } );
 			state.eax = @as( u32, @bitCast( @as( i32, -1 ) ) );
 			return;
 		}
@@ -90,14 +93,18 @@ fn extractCStr( ptr: usize ) error{ InvalidPointer }![]const u8 {
 	return str[0..std.mem.indexOfSentinel( u8, 0, str )];
 }
 
-fn handlerWrapper( id: Syscall, args: [6]usize ) isize {
-	if ( id != .Read and id != .Write ) {
+pub fn handlerWrapper( id: Syscall, args: [6]usize ) isize {
+	if ( ( id != .Read and id != .Write ) or args[0] > 2 ) {
 		root.log.printUnsafe( "syscall: task:{} {s}(", .{ task.currentTask.id, @tagName( id ) } );
 	}
 
 	if ( handler( id, args ) ) |val| {
-		if ( id != .Read and id != .Write ) {
-			root.log.printUnsafe( ") => {}\n", .{ val } );
+		if ( ( id != .Read and id != .Write ) or args[0] > 2 ) {
+			if ( val < 0x10000 ) {
+				root.log.printUnsafe( ") => {}\n", .{ val } );
+			} else {
+				root.log.printUnsafe( ") => 0x{x}\n", .{ val } );
+			}
 		}
 
 		return val;
@@ -105,7 +112,7 @@ fn handlerWrapper( id: Syscall, args: [6]usize ) isize {
 		task.currentTask.errno = task.Errno.fromError( err );
 		var val: isize = task.currentTask.errno.getResult();
 
-		if ( id != .Read and id != .Write ) {
+		if ( ( id != .Read and id != .Write ) or args[0] > 2 ) {
 			root.log.printUnsafe( ") => {} ({})\n", .{ val, task.currentTask.errno } );
 		}
 
@@ -117,15 +124,21 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 	return switch ( id ) {
 		// read( fd, bufPtr, bufLen )
 		.Read => _: {
+			if ( args[0] > 2 ) {
+				root.log.printUnsafe( " {} ", .{ args[0] } );
+			}
+
 			const fd = try task.currentTask.getFd( args[0] );
 			var buf = try extractSlice( u8, args[1], args[2] );
 
-			const out: isize = @bitCast( fd.read( buf ) );
-
-			break :_ out;
+			break :_ @bitCast( try fd.read( buf ) );
 		},
 		// write( fd, bufPtr, bufLen )
 		.Write => _: {
+			if ( args[0] > 2 ) {
+				root.log.printUnsafe( " {} ", .{ args[0] } );
+			}
+
 			const fd = try task.currentTask.getFd( args[0] );
 			const buf = try extractSlice( u8, args[1], args[2] );
 
@@ -169,6 +182,29 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 			}
 
 			break :_ out;
+		},
+		// brk( addr )
+		.Brk => _: {
+			root.log.printUnsafe( " 0x{x} ", .{ args[0] } );
+
+			if ( args[0] == 0 ) {
+				break :_ @bitCast( task.currentTask.memBreak );
+			}
+
+			const pages: usize = @max( 1, @min( 10, std.mem.alignForwardLog2( args[0], 22 ) >> 22 ) );
+
+			const prevBrk = task.currentTask.memBreak;
+			while ( task.currentTask.memPages.items.len > pages ) {
+				mem.freePhysical( task.currentTask.memPages.pop() );
+			}
+
+			while ( task.currentTask.memPages.items.len < pages ) {
+				try task.currentTask.memPages.append( root.kheap, try mem.allocPhysical() );
+			}
+
+			task.currentTask.memBreak = args[0];
+			task.currentTask.map();
+			break :_ @bitCast( prevBrk );
 		},
 		// socket( family, type, protocol )
 		.Socket => _: {
@@ -245,7 +281,13 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 			break :_ @bitCast( out.data.len );
 		},
 		.Exit => {
-			root.log.printUnsafe( " {} ) => noreturn", .{ args[0] } );
+			root.log.printUnsafe( " {} ) => noreturn\n", .{ args[0] } );
+			for ( 0..task.currentTask.fd.items.len ) |fd| {
+				if ( task.currentTask.fd.items[fd] != null ) {
+					_ = handlerWrapper( .Close, .{ fd } ++ .{ undefined } ** 5 );
+				}
+			}
+
 			task.currentTask.exit( args[0] );
 		},
 		else => -1

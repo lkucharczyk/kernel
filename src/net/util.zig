@@ -62,9 +62,9 @@ pub fn checksumBody( start: u16, ptr: []const u8 ) u16 {
 	return ~out;
 }
 
-pub inline fn hton( comptime T: type, val: T ) T {
-	if ( isLe ) {
-		return switch ( @typeInfo( T )) {
+pub inline fn hton( val: anytype ) @TypeOf( val ) {
+	return if ( isLe ) (
+		switch ( @typeInfo( @TypeOf( val ) ) ) {
 			.Struct => |s| (
 				if ( s.backing_integer ) |B| (
 					@bitCast( @byteSwap( @as( B, @bitCast( val ) ) ) )
@@ -74,8 +74,8 @@ pub inline fn hton( comptime T: type, val: T ) T {
 			),
 			.Enum => @enumFromInt( @byteSwap( @intFromEnum( val ) ) ),
 			else => @byteSwap( val )
-		};
-	} else {
-		return val;
-	}
+		}
+	) else (
+		val
+	);
 }

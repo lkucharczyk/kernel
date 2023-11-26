@@ -43,7 +43,7 @@ pub const RootVfs = struct {
 
 	fn createDir( self: *RootVfs, parent: ?*vfs.Node, name: [*:0]const u8 ) std.mem.Allocator.Error!*vfs.Node {
 		var node = try self.nodePool.create();
-		var ctx = try self.dirPool.create();
+		const ctx = try self.dirPool.create();
 
 		ctx.* = .{
 			.fs = self,
@@ -63,7 +63,7 @@ pub const RootVfs = struct {
 			return mnt.mkdir( name );
 		}
 
-		var newNode = try ctx.fs.createDir( node, name );
+		const newNode = try ctx.fs.createDir( node, name );
 		try ctx.subnodes.append( ctx.fs.allocator, newNode );
 
 		return newNode;
@@ -71,7 +71,7 @@ pub const RootVfs = struct {
 
 	pub fn createRoFile( self: *RootVfs, name: [*:0]const u8, data: []const u8 ) std.mem.Allocator.Error!*vfs.Node {
 		var node = try self.nodePool.create();
-		var ctx = try self.filePool.create();
+		const ctx = try self.filePool.create();
 
 		ctx.* = .{
 			.fs = self,

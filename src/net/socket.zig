@@ -1,15 +1,11 @@
 const std = @import( "std" );
-const ipv4 = @import( "./ipv4.zig" );
 const net = @import( "../net.zig" );
-const netUtil = @import( "./util.zig" );
-const udp = @import( "./udp.zig" );
-const sockaddr = @import( "./sockaddr.zig" );
 const task = @import( "../task.zig" );
 const vfs = @import( "../vfs.zig" );
 const Queue = @import( "../util/queue.zig" ).Queue;
 
 pub const Message = struct {
-	srcAddr: sockaddr.Sockaddr align(4),
+	srcAddr: net.Sockaddr align(4),
 	data: []const u8
 };
 
@@ -27,16 +23,24 @@ pub const Socket = struct {
 		}
 	};
 
-	family: sockaddr.Family,
-	stype: Type,
-	protocol: ipv4.Protocol,
+	pub const VTable = struct {
+		bind: ?*const fn( *Socket, ?net.Sockaddr ) error{ AddressInUse }!void = null,
+		close: ?*const fn( *Socket ) void = null,
+		send: ?*const fn( *Socket, net.Sockaddr, []const u8 ) error{ NoRouteToHost }!void = null
+	};
 
-	address: sockaddr.Sockaddr align(4),
+	family: net.sockaddr.Family,
+	stype: Type,
+	protocol: net.ipv4.Protocol,
+
+	address: net.Sockaddr align(4),
 	node: vfs.Node = undefined,
 
 	arena: std.heap.ArenaAllocator,
 	alloc: std.mem.Allocator,
 	rxQueue: Queue( Message ),
+
+	vtable: VTable,
 
 	pub fn init( self: *Socket, alloc: std.mem.Allocator ) void {
 		self.arena = std.heap.ArenaAllocator.init( alloc );
@@ -48,14 +52,20 @@ pub const Socket = struct {
 			.close = &deinit,
 			.read = &read
 		} );
+
+		switch ( self.protocol ) {
+			.Udp => net.udp.initSocket( self ),
+			else => {
+				self.vtable = .{};
+			}
+		}
 	}
 
 	pub fn deinit( node: *vfs.Node ) void {
 		var self: *Socket = @alignCast( @ptrCast( node.ctx ) );
 
-		var port = self.address.getPort();
-		if ( port != 0 and self.protocol == .Udp ) {
-			udp.ports[port] = null;
+		if ( self.vtable.close ) |f| {
+			f( self );
 		}
 
 		self.arena.deinit();
@@ -64,18 +74,19 @@ pub const Socket = struct {
 		net.destroySocket( self );
 	}
 
-	pub fn bind( self: *Socket, addr: sockaddr.Sockaddr ) error{ AddressInUse, InvalidArgument }!void {
+	pub fn bind( self: *Socket, addr: net.Sockaddr ) error{ AddressInUse, InvalidArgument }!void {
 		if ( self.family != addr.unknown.family ) {
 			return task.Error.InvalidArgument;
 		}
 
-		return switch ( self.protocol ) {
-			.Udp => udp.bind( self, addr ),
-			else => task.Error.InvalidArgument
-		};
+		return if ( self.vtable.bind ) |f| (
+			f( self, addr )
+		) else (
+			task.Error.InvalidArgument
+		);
 	}
 
-	pub fn internalRecv( self: *Socket, addr: sockaddr.Sockaddr, buf: []const u8 ) void {
+	pub fn internalRecv( self: *Socket, addr: net.Sockaddr, buf: []const u8 ) void {
 		if (
 			self.rxQueue.push( Message {
 				.data = self.alloc.dupe( u8, buf ) catch unreachable,
@@ -119,17 +130,16 @@ pub const Socket = struct {
 		}
 	}
 
-	pub fn sendto( self: *Socket, addr: sockaddr.Sockaddr, buf: []const u8 ) error{ InvalidArgument }!isize {
+	pub fn sendto( self: *Socket, addr: net.Sockaddr, buf: []const u8 ) error{ InvalidArgument, NoRouteToHost }!isize {
 		if ( addr.unknown.family != self.family ) {
 			return task.Error.InvalidArgument;
 		}
 
-		return switch ( self.protocol ) {
-			.Udp => _: {
-				udp.send( self, addr, buf );
-				break :_ @bitCast( buf.len );
-			},
-			else => task.Error.InvalidArgument
-		};
+		if ( self.vtable.send ) |f| {
+			try f( self, addr, buf );
+			return @bitCast( buf.len );
+		} else {
+			return task.Error.InvalidArgument;
+		}
 	}
 };

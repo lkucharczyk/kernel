@@ -16,6 +16,7 @@ pub const getErrno = std.os.linux.getErrno;
 
 pub const close = std.os.linux.close;
 pub const exit = std.os.linux.exit;
+pub const ioctl = std.os.linux.ioctl;
 pub const open = std.os.linux.open;
 pub const read = std.os.linux.read;
 pub const write = std.os.linux.write;

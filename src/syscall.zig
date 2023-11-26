@@ -13,6 +13,7 @@ pub const Syscall = enum(u32) {
 	Close    = 3,
 	Poll     = 7,
 	Brk      = 12,
+	IoCtl    = 16,
 	Socket   = 41,
 	SendTo   = 44,
 	RecvFrom = 45,
@@ -30,8 +31,9 @@ fn handlerIrq( state: *x86.State ) void {
 		5 => Syscall.Open,
 		6 => Syscall.Close,
 		45 => Syscall.Brk,
+		54 => Syscall.IoCtl,
 		102 => _: {
-			var argPtr: [*]u32 = @ptrFromInt( state.ecx );
+			const argPtr: [*]u32 = @ptrFromInt( state.ecx );
 			var argCount: u8 = 0;
 			var argId: Syscall = undefined;
 
@@ -77,8 +79,8 @@ fn handlerIrq( state: *x86.State ) void {
 }
 
 fn extractSlice( comptime T: type, ptr: usize, len: usize ) error{ InvalidPointer }![]T {
-	if ( ptr == 0 ) {
-		return error.InvalidPointer;
+	if ( ptr == 0 ) {// or ( !task.currentTask.kernelMode and ptr + len >= task.currentTask.memBreak ) ) {
+		return task.Error.InvalidPointer;
 	}
 
 	return @as( [*]T, @ptrFromInt( ptr ) )[0..len];
@@ -110,7 +112,7 @@ pub fn handlerWrapper( id: Syscall, args: [6]usize ) isize {
 		return val;
 	} else |err| {
 		task.currentTask.errno = task.Errno.fromError( err );
-		var val: isize = task.currentTask.errno.getResult();
+		const val: isize = task.currentTask.errno.getResult();
 
 		if ( ( id != .Read and id != .Write ) or args[0] > 2 ) {
 			root.log.printUnsafe( ") => {} ({})\n", .{ val, task.currentTask.errno } );
@@ -129,7 +131,7 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 			}
 
 			const fd = try task.currentTask.getFd( args[0] );
-			var buf = try extractSlice( u8, args[1], args[2] );
+			const buf = try extractSlice( u8, args[1], args[2] );
 
 			break :_ @bitCast( try fd.read( buf ) );
 		},
@@ -170,11 +172,14 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 			const timeout: i32 = @bitCast( args[2] );
 			root.log.printUnsafe( " [{}]{*}, {} ", .{ fd.len, fd.ptr, timeout } );
 
+			var out: i32 = 0;
 			if ( fd.len > 0 ) {
-				task.currentTask.park( .{ .poll = .{ .fd = fd } } );
+				var wait = task.PollWait { .fd = fd };
+				if ( !wait.ready( task.currentTask ) ) {
+					task.currentTask.park( .{ .poll = wait } );
+				}
 			}
 
-			var out: i32 = 0;
 			for ( fd ) |f| {
 				if ( @as( u16, @bitCast( f.retEvents ) ) > 0 ) {
 					out +|= 1;
@@ -206,6 +211,13 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 			task.currentTask.map();
 			break :_ @bitCast( prevBrk );
 		},
+		// ioctl( fd, cmd, arg )
+		.IoCtl => _: {
+			root.log.printUnsafe( " {}, {}, {} ", .{ args[0], args[1], args[2] } );
+
+			const fd = try task.currentTask.getFd( args[0] );
+			break :_ ( fd.node.vtable.ioctl orelse break :_ error.PermissionDenied )( fd.node, fd, args[1], args[2] );
+		},
 		// socket( family, type, protocol )
 		.Socket => _: {
 			const family: net.sockaddr.Family = @enumFromInt( args[0] );
@@ -235,7 +247,7 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 		},
 		// sendto( fd, bufPtr, bufLen, flags, sockaddrPtr, sockaddrLen )
 		.SendTo => _: {
-			var buf: []const u8 = try extractSlice( u8, args[1], args[2] );
+			const buf: []const u8 = try extractSlice( u8, args[1], args[2] );
 			var sockaddr: net.Sockaddr = undefined;
 
 			const mlen = @min( @sizeOf( net.Sockaddr ), args[5] );
@@ -254,8 +266,8 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 		// recvfrom( fd, bufPtr, bufLen, flags, sockaddrPtr, sockaddrLenPtr )
 		.RecvFrom => _: {
 			var buf = try extractSlice( u8, args[1], args[2] );
-			var addr: ?*align(1) net.Sockaddr = @ptrFromInt( args[4] );
-			var addrlen: ?*align(1) u32 = @ptrFromInt( args[5] );
+			const addr: ?*align(1) net.Sockaddr = @ptrFromInt( args[4] );
+			const addrlen: ?*align(1) u32 = @ptrFromInt( args[5] );
 			root.log.printUnsafe( " {}, [{}]{*}, {}, {*}, {*} ", .{ args[0], buf.len, buf, args[3], addr, addrlen } );
 
 			const fd = try task.currentTask.getFd( args[0] );
@@ -332,7 +344,7 @@ pub fn call( id: Syscall, args: anytype ) i32 {
 		@compileError( "expected tuple" );
 	}
 
-	var syscallArgs = argparse( args );
+	const syscallArgs = argparse( args );
 
 	return switch ( @import( "builtin" ).cpu.arch ) {
 		.x86 => asm volatile (

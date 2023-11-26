@@ -1,9 +1,9 @@
 const std = @import( "std" );
 const net = @import( "../net.zig" );
-const netUtil = @import( "./util.zig" );
 
 pub const Address = packed struct(u32) {
 	pub const Any = Address { .val = 0 };
+	pub const Localhost = Address.init( .{ 127, 0, 0, 1 } );
 
 	val: u32,
 
@@ -13,7 +13,7 @@ pub const Address = packed struct(u32) {
 				(   @as( u32, @intCast( o[3] ) ) << 24 )
 				| ( @as( u32, @intCast( o[2] ) ) << 16 )
 				| ( @as( u32, @intCast( o[1] ) ) <<  8 )
-				| ( @as( u32, @intCast( o[0] ) ) <<  0 )
+				| ( @as( u32, @intCast( o[0] ) )       )
 		};
 	}
 
@@ -54,25 +54,28 @@ pub const Route = struct {
 	dstNetwork: Address,
 	dstMask: Mask,
 	srcAddress: Address,
+	viaAddress: Address,
 
 	pub fn match( self: Route, dstAddress: Address ) bool {
 		return ( self.dstNetwork.val & self.dstMask.val ) == ( dstAddress.val & self.dstMask.val );
 	}
 
 	pub fn format( self: Route, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) !void {
-		try std.fmt.format( writer, "{s}{{ {}{} (src: {}) }}", .{
+		try std.fmt.format( writer, "{s}{{ {}{} (src: {}; via: {}) }}", .{
 			@typeName( Route ),
 			self.dstNetwork,
 			self.dstMask,
-			self.srcAddress
+			self.srcAddress,
+			self.viaAddress
 		} );
 	}
 };
 
 pub const Protocol = enum(u8) {
-	Icmp =  1,
-	Tcp  =  6,
+	Icmp = 1,
+	Tcp  = 6,
 	Udp  = 17,
+	Raw  = 255,
 	_
 };
 
@@ -106,12 +109,12 @@ pub const Header = extern struct {
 	dstAddr: Address,
 
 	fn hton( self: *Header ) void {
-		self.id = netUtil.hton( u16, self.id );
-		self.flags = netUtil.hton( Flags, self.flags );
+		self.id = net.util.hton( self.id );
+		self.flags = net.util.hton( self.flags );
 	}
 };
 
-pub const Body = netUtil.NetBody;
+pub const Body = net.util.NetBody;
 
 pub const Packet = struct {
 	header: Header,
@@ -125,17 +128,17 @@ pub const Packet = struct {
 		return @sizeOf( Header ) + self.body.len();
 	}
 
-	pub fn toHwBody( self: *Packet ) netUtil.HwBody {
-		self.header.len = netUtil.hton( u16, @truncate( self.len() ) );
+	pub fn toHwBody( self: *Packet ) net.util.HwBody {
+		self.header.len = net.util.hton( @as( u16, @truncate( self.len() ) ) );
 		self.header.checksum = 0;
-		self.header.checksum = netUtil.checksum( @as( [*]u16, @ptrCast( &self.header ) )[0..10] );
+		self.header.checksum = net.util.checksum( @as( [*]u16, @ptrCast( &self.header ) )[0..10] );
 
 		return .{
 			.parts = .{
 				@as( [*]const u8, @ptrCast( &self.header ) )[0..@sizeOf( @import( "./ipv4.zig" ).Header )]
 			}
 				++ self.body.parts
-				++ ( .{ null } ** ( netUtil.HwBody.PARTS - netUtil.NetBody.PARTS - 1 ) )
+				++ ( .{ null } ** ( net.util.HwBody.PARTS - net.util.NetBody.PARTS - 1 ) )
 		};
 	}
 };
@@ -149,8 +152,8 @@ pub fn recv( _: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 
 	var addrMatch = false;
 	for ( net.interfaces.items ) |interface| {
-		if ( interface.ipv4Addr ) |addr| {
-			if ( addr.val == header.dstAddr.val ) {
+		if ( interface.ipv4Route ) |iproute| {
+			if ( iproute.srcAddress.val == header.dstAddr.val ) {
 				addrMatch = true;
 				break;
 			}
@@ -159,8 +162,8 @@ pub fn recv( _: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 
 	if (
 		addrMatch
-		and netUtil.hton( Header.Flags, header.flags ).dontFragment
-		and netUtil.hton( u16, header.len ) <= data.len
+		and net.util.hton( header.flags ).dontFragment
+		and net.util.hton( header.len ) <= data.len
 	) {
 		return net.EntryL4 {
 			.protocol = header.protocol,
@@ -178,22 +181,13 @@ pub fn recv( _: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 }
 
 var sendId: u16 = 0;
-pub fn send( protocol: Protocol, sockaddr: net.sockaddr.Ipv4, body: netUtil.NetBody ) void {
-	// TODO: add proper routing
-	var interface: *const net.Interface = &net.interfaces.items[1];
-	for ( net.interfaces.items ) |*netif| {
-		if ( netif.ipv4Addr ) |addr| {
-			if ( addr.val == sockaddr.address.val ) {
-				interface = netif;
-				break;
-			}
-		}
-	}
+pub fn send( protocol: Protocol, sockaddr: net.sockaddr.Ipv4, body: net.util.NetBody ) error{ NoRouteToHost }!void {
+	var interface: *const net.Interface = route( sockaddr.address ) orelse return error.NoRouteToHost;
 
 	var packet = Packet {
 		.header = .{
 			.protocol = protocol,
-			.srcAddr = interface.ipv4Addr.?,
+			.srcAddr = interface.ipv4Route.?.srcAddress,
 			.dstAddr = sockaddr.address,
 			.id = sendId
 		},
@@ -211,17 +205,28 @@ pub fn send( protocol: Protocol, sockaddr: net.sockaddr.Ipv4, body: netUtil.NetB
 	);
 }
 
+// TODO: add proper multi-address routing
+pub fn route( addr: Address ) ?*const net.Interface {
+	for ( net.interfaces.items ) |*interface| {
+		if ( interface.ipv4Route ) |iproute| {
+			if ( iproute.match( addr ) ) {
+				return interface;
+			}
+		}
+	}
+
+	return null;
+}
+
 test "net.ipv4.Route.match" {
-	var route = Route {
+	var iproute = Route {
 		.dstNetwork = Address.init( .{ 192, 168, 10, 0 } ),
 		.dstMask = Mask.init( 23 ),
 		.srcAddress = Address.init( .{ 192, 168, 10, 1 } )
 	};
 
-	std.debug.print( "{}\n", .{ route } );
-
-	try std.testing.expectEqual( false, route.match( Address.init( .{ 192, 168, 9, 10 } ) ) );
-	try std.testing.expectEqual( true, route.match( Address.init( .{ 192, 168, 10, 10 } ) ) );
-	try std.testing.expectEqual( true, route.match( Address.init( .{ 192, 168, 11, 10 } ) ) );
-	try std.testing.expectEqual( false, route.match( Address.init( .{ 192, 168, 12, 10 } ) ) );
+	try std.testing.expectEqual( false, iproute.match( Address.init( .{ 192, 168, 9, 10 } ) ) );
+	try std.testing.expectEqual( true, iproute.match( Address.init( .{ 192, 168, 10, 10 } ) ) );
+	try std.testing.expectEqual( true, iproute.match( Address.init( .{ 192, 168, 11, 10 } ) ) );
+	try std.testing.expectEqual( false, iproute.match( Address.init( .{ 192, 168, 12, 10 } ) ) );
 }

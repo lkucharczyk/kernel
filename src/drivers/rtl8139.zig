@@ -265,7 +265,7 @@ const Rtl8139 = struct {
 		self.outT( MediaStatus { .rxFlowControl = true, .txFlowControl = true } );
 		self.outT( InterruptMask {
 			.rxOk = true,
-			.txOk = false,
+			.txOk = true,
 			.rxBufferOverflow = true,
 			.rxFifoOverflow = true
 		} );
@@ -273,26 +273,28 @@ const Rtl8139 = struct {
 	}
 
 	fn send( self: *Rtl8139, frame: ethernet.Frame ) void {
-		var i = self.txBuffer.posw;
-		if ( self.txBuffer.pushUndefined() ) |bufFrame| {
-			frame.copyTo( bufFrame );
+		while ( true ) {
+			const i = self.txBuffer.posw;
+			if ( self.txBuffer.pushUndefined() ) |bufFrame| {
+				frame.copyTo( bufFrame );
 
-			bufFrame.header.src = self.macAddr;
+				bufFrame.header.src = self.macAddr;
 
-			self.out( u32, RegisterOffset.TxAddress[i], bufFrame.getDmaAddress() );
-			self.out( TxStatus, RegisterOffset.TxStatus[i], .{
-				.length = @truncate( bufFrame.len ),
-				.own = false,
-				.txOk = true
-			} );
+				self.out( u32, RegisterOffset.TxAddress[i], bufFrame.getDmaAddress() );
+				self.out( TxStatus, RegisterOffset.TxStatus[i], .{
+					.length = @truncate( bufFrame.len ),
+					.own = false,
+					.txOk = true
+				} );
 
-			while ( !self.in( TxStatus, RegisterOffset.TxStatus[i] ).txOk ) {
+				return;
+			} else {
+				self.interface.fsNode.signal( .{ .write = false } );
+				@import( "../task.zig" ).currentTask.park( .{ .fd = .{
+					.ptr = self.interface.fsNode.descriptors.items[0],
+					.status = .{ .write = true }
+				} } );
 			}
-
-			_ = self.txBuffer.pop();
-			self.outT( InterruptStatus { .txOk = true } );
-		} else {
-			@panic( "rtl8139 tx buffer full" );
 		}
 	}
 
@@ -326,6 +328,18 @@ const Rtl8139 = struct {
 				} else {
 					self.rxBuffer.seek( -@sizeOf( DataHeader ) );
 					break;
+				}
+			}
+
+			if ( status.txOk ) {
+				for ( 0..self.txBuffer.items.len ) |j| {
+					if (
+						self.txBuffer.items[j] != null
+						and self.in( TxStatus, RegisterOffset.TxStatus[j] ).txOk
+					) {
+						self.txBuffer.items[j] = null;
+						self.interface.fsNode.signal( .{ .write = true } );
+					}
 				}
 			}
 

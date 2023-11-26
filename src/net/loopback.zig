@@ -15,7 +15,12 @@ pub const Ethernet = struct {
 			}
 		} );
 
-		self.interface.ipv4Addr = net.ipv4.Address.init( .{ 127, 0, 0, 1 } );
+		self.interface.ipv4Route = .{
+			.srcAddress = net.ipv4.Address.Localhost,
+			.dstNetwork = net.ipv4.Address.Localhost,
+			.dstMask = net.ipv4.Mask.init( 32 ),
+			.viaAddress = net.ipv4.Address.Localhost
+		};
 	}
 
 	pub fn send( self: *Ethernet, frame: ethernet.Frame ) void {

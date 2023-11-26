@@ -33,7 +33,7 @@ pub fn Queue( comptime T: type ) type {
 
 		pub fn pop( self: *Self ) ?T {
 			if ( self.list.popFirst() ) |node| {
-				var out = node.data;
+				const out = node.data;
 				self.pool.destroy( node );
 				return out;
 			}

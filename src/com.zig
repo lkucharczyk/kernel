@@ -212,16 +212,9 @@ pub const SerialPort = struct {
 
 			if ( c == '\n' ) {
 				self.out( u8, RegisterOffset.Data, '\r' );
-				for ( 0..100 ) |_| {
-					asm volatile ( "nop" );
-				}
 				while ( !self.getLineStatus().txHoldEmpty ) {
-					asm volatile ( "hlt" );
+					// asm volatile ( "hlt" );
 				}
-			}
-
-			for ( 0..100 ) |_| {
-				asm volatile ( "nop" );
 			}
 
 			self.out( u8, RegisterOffset.Data, c );

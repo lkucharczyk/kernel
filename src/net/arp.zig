@@ -109,8 +109,8 @@ pub fn recv( interface: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 		and packet.header.opCode == .Request
 		and packet.header.hwType == .Ethernet
 		and packet.header.proto == .Ipv4
-		and interface.ipv4Addr != null
-		and interface.ipv4Addr.?.val == packet.body.eth_ipv4.dstProtoAddr.val
+		and interface.ipv4Route != null
+		and interface.ipv4Route.?.srcAddress.val == packet.body.eth_ipv4.dstProtoAddr.val
 	) {
 		// root.log.printUnsafe( "arp req: {}\n", .{ packet } );
 
@@ -120,7 +120,7 @@ pub fn recv( interface: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 				.eth_ipv4 = .{
 					.srcHwAddr = interface.device.hwAddr,
 					.dstHwAddr = packet.body.eth_ipv4.srcHwAddr,
-					.srcProtoAddr = interface.ipv4Addr.?,
+					.srcProtoAddr = interface.ipv4Route.?.srcAddress,
 					.dstProtoAddr = packet.body.eth_ipv4.srcProtoAddr
 				}
 			}

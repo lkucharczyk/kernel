@@ -14,8 +14,8 @@ pub const Datagram = struct {
 	body: Body,
 
 	pub fn hton( self: *Datagram ) void {
-		self.header.srcPort = net.util.hton( u16, self.header.srcPort );
-		self.header.dstPort = net.util.hton( u16, self.header.dstPort );
+		self.header.srcPort = net.util.hton( self.header.srcPort );
+		self.header.dstPort = net.util.hton( self.header.dstPort );
 	}
 
 	pub fn len( self: Datagram ) u16 {
@@ -23,7 +23,7 @@ pub const Datagram = struct {
 	}
 
 	pub fn toNetBody( self: *Datagram ) net.util.NetBody {
-		self.header.len = net.util.hton( u16, self.len() );
+		self.header.len = net.util.hton( self.len() );
 		self.header.checksum = 0;
 
 		return .{
@@ -36,13 +36,28 @@ pub const Datagram = struct {
 	}
 };
 
+pub fn initSocket( socket: *net.Socket ) void {
+	socket.vtable = .{
+		.bind = &bind,
+		.close = &close,
+		.send = &send
+	};
+}
+
+fn close( socket: *net.Socket ) void {
+	const port = socket.address.getPort();
+	if ( port != 0 and ports[port] == socket ) {
+		ports[port] = null;
+	}
+}
+
 const PORTS_AUTO_START = 1024;
-pub var ports: [0xffff]?*net.Socket = .{ null } ** 0xffff;
+var ports: [0xffff]?*net.Socket = .{ null } ** 0xffff;
 var portCounter: u16 = PORTS_AUTO_START - 1;
 pub fn bind( socket: *net.Socket, sockaddr: ?net.Sockaddr ) error{ AddressInUse }!void {
 	const port = _: {
 		if ( sockaddr ) |a| {
-			var port = a.getPort();
+			const port = a.getPort();
 			if ( port > 0 ) {
 				if ( ports[port] == null ) {
 					break :_ port;
@@ -73,7 +88,7 @@ pub fn bind( socket: *net.Socket, sockaddr: ?net.Sockaddr ) error{ AddressInUse 
 	ports[port] = socket;
 }
 
-pub fn send( socket: ?*net.Socket, sockaddr: net.Sockaddr, body: []const u8 ) void {
+pub fn send( socket: ?*net.Socket, sockaddr: net.Sockaddr, body: []const u8 ) error{ NoRouteToHost }!void {
 	var srcPort: u16 = 0;
 	if ( socket ) |s| {
 		srcPort = s.address.getPort();
@@ -98,7 +113,7 @@ pub fn send( socket: ?*net.Socket, sockaddr: net.Sockaddr, body: []const u8 ) vo
 
 	datagram.hton();
 
-	net.send( .Udp, sockaddr, datagram.toNetBody() );
+	try net.send( .Udp, sockaddr, datagram.toNetBody() );
 }
 
 pub fn recv( entry: net.EntryL4 ) void {
@@ -106,8 +121,8 @@ pub fn recv( entry: net.EntryL4 ) void {
 		return;
 	}
 
-	const header: *const align( 1 ) Header = @ptrCast( entry.data );
-	if ( ports[net.util.hton( u16, header.dstPort )] ) |port| {
+	const header: *const align(1) Header = @ptrCast( entry.data );
+	if ( ports[net.util.hton( header.dstPort )] ) |port| {
 		var addr = entry.sockaddr;
 		addr.setPortNet( header.srcPort );
 		port.internalRecv( addr, entry.data[@sizeOf( Header )..] );

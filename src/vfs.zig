@@ -1,10 +1,12 @@
 const std = @import( "std" );
 const root = @import( "root" );
+const task = @import( "./task.zig" );
 const RootVfs = @import( "./fs/root.zig" ).RootVfs;
 
 pub const VTable = struct {
 	open:    ?*const fn( node: *Node, fd: *FileDescriptor ) void = null,
 	close:   ?*const fn( node: *Node ) void = null,
+	ioctl:   ?*const fn( node: *Node, fd: *FileDescriptor, cmd: u32, arg: usize ) task.Error!i32 = null,
 
 	// NodeType.File
 	read:    ?*const fn( node: *Node, fd: *FileDescriptor, buf: []u8 ) u32 = null,

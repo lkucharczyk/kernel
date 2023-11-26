@@ -65,7 +65,7 @@ pub const Frame = struct {
 	body: Body,
 
 	pub fn len( self: Frame ) u16 {
-		var out: usize = @sizeOf( Header ) + self.body.len();
+		const out: usize = @sizeOf( Header ) + self.body.len();
 
 		std.debug.assert( out <= MAX_LENGTH );
 		return @truncate( out );

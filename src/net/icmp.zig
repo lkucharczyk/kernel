@@ -74,6 +74,6 @@ pub fn recv( entry: net.EntryL4 ) void {
 			.body = body
 		};
 
-		net.send( .Icmp, entry.sockaddr, response.toNetBody() );
+		net.send( .Icmp, entry.sockaddr, response.toNetBody() ) catch {};
 	}
 }

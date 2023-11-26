@@ -1,6 +1,5 @@
 const std = @import( "std" );
 const net = @import( "../net.zig" );
-const netUtil = @import( "./util.zig" );
 
 pub const Family = enum(u16) {
 	Unspecified = 0,
@@ -27,10 +26,10 @@ pub const Unix = extern struct {
 pub const Ipv4 = extern struct {
 	family: Family = .Ipv4,
 	port: u16 = 0,
-	address: @import( "./ipv4.zig" ).Address = @import( "./ipv4.zig" ).Address.Any,
+	address: net.ipv4.Address = net.ipv4.Address.Any,
 
 	pub fn format( self: Ipv4, _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
-		try std.fmt.format( writer, "{}:{}", .{ self.address, netUtil.hton( u16, self.port ) } );
+		try std.fmt.format( writer, "{}:{}", .{ self.address, net.util.hton( self.port ) } );
 	}
 };
 
@@ -67,7 +66,7 @@ pub const Sockaddr = extern union {
 	ipv6: Ipv6,
 
 	pub fn getPort( self: Sockaddr ) u16 {
-		return net.util.hton( u16, switch ( self.unknown.family ) {
+		return net.util.hton( switch ( self.unknown.family ) {
 			.Ipv4 => self.ipv4.port,
 			.Ipv6 => self.ipv6.port,
 			else => 0
@@ -75,7 +74,7 @@ pub const Sockaddr = extern union {
 	}
 
 	pub inline fn setPort( self: *align(4) Sockaddr, port: u16 ) void {
-		self.setPortNet( net.util.hton( u16, port ) );
+		self.setPortNet( net.util.hton( port ) );
 	}
 
 	pub fn setPortNet( self: *align(4) Sockaddr, port: u16 ) void {

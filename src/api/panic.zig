@@ -6,11 +6,7 @@ fn osWrite( fd: i32, buf: []const u8 ) error{}!usize {
 }
 
 fn openDwarfInfo() !std.dwarf.DwarfInfo {
-	var sba = std.heap.SbrkAllocator( system.sbrk ) {};
-	const alloc = std.mem.Allocator {
-		.ptr = &sba,
-		.vtable = &std.heap.SbrkAllocator( system.sbrk ).vtable
-	};
+	const alloc = std.heap.page_allocator;
 
 	const ELF_BUFSIZE = 512 * 1024;
 	const fd: i32 = @bitCast( system.open( std.os.argv[0], std.os.linux.O.RDONLY, 0 ) );

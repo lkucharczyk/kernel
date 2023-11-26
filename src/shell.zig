@@ -1,9 +1,11 @@
 const std = @import( "std" );
+const net = @import( "./net.zig" );
 const Errno = @import( "./task.zig" ).Errno;
 
 pub usingnamespace @import( "./api/import.zig" );
 
 const OsError = error {
+	OutOfMemory,
 	SyscallError
 };
 
@@ -32,7 +34,13 @@ inline fn print( comptime fmt: []const u8, args: anytype ) void {
 	std.fmt.format( stdout, fmt, args ) catch unreachable;
 }
 
+var gpa: std.heap.GeneralPurposeAllocator( .{ .safety = false } ) = undefined;
+var alloc: std.mem.Allocator = undefined;
+
 pub fn main() anyerror!void {
+	gpa = std.heap.GeneralPurposeAllocator( .{ .safety = false } ) {};
+	alloc = gpa.allocator();
+
 	const SYSCALL_ERR: usize = @bitCast( @as( isize, -1 ) );
 
 	if ( std.os.argv.len >= 2 ) {
@@ -105,21 +113,24 @@ fn process( cmd: []const u8 ) OsError!void {
 		} else if ( std.mem.eql( u8, cmd0, "panic" ) ) {
 			@panic( "Manual panic" );
 		} else if ( std.mem.eql( u8, cmd0, "help" ) ) {
-			var cmd1 = iter.next() orelse "";
+			const cmd1 = iter.next() orelse "";
 			if ( std.mem.eql( u8, cmd1, "recvudp" ) ) {
+				write( "ipaddr [netdev file]\n" );
+				write( "ipaddr [netdev file] [ipv4 address] [mask]\n" );
+			} else if ( std.mem.eql( u8, cmd1, "recvudp" ) ) {
 				write( "recvudp [port]\n" );
 			} else if ( std.mem.eql( u8, cmd1, "recvudpd" ) ) {
 				write( "recvudpd [ports...]\n" );
 			} else if ( std.mem.eql( u8, cmd1, "sendudp" ) ) {
 				write( "sendudp [ipv4 address] [port] [data...]\n" );
 			} else {
-				write( "commands: recvudp, recvudpd, sendudp, exit, kpanic, panic\n" );
+				write( "commands: ipaddr, recvudp, recvudpd, sendudp, exit, kpanic, panic\n" );
 			}
 		} else if ( std.mem.eql( u8, cmd0, "recvudp" ) ) {
 			const sock: i32 = @bitCast( try h( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) ) );
 			defer _ = linux.close( sock );
 
-			var src: @import( "./net/sockaddr.zig" ).Ipv4 = undefined;
+			var src: net.sockaddr.Ipv4 = undefined;
 			var srclen: u32 = @sizeOf( @TypeOf( src ) );
 			var buf: [0x600]u8 = undefined;
 
@@ -152,7 +163,7 @@ fn process( cmd: []const u8 ) OsError!void {
 				_ = try h( linux.bind( fds[i].fd, @ptrCast( &addr ), @sizeOf( linux.sockaddr.in ) ) );
 			}
 
-			var src: @import( "./net/sockaddr.zig" ).Ipv4 = undefined;
+			var src: net.sockaddr.Ipv4 = undefined;
 			var srclen: u32 = @sizeOf( @TypeOf( src ) );
 			var buf: [0x600]u8 = undefined;
 
@@ -176,11 +187,41 @@ fn process( cmd: []const u8 ) OsError!void {
 				iter.next() orelse return,
 				std.fmt.parseInt( u16, iter.next() orelse return, 0 ) catch return
 			) catch return;
-			var sock: i32 = @bitCast( try h( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) ) );
-			var buf = iter.rest();
+			const sock: i32 = @bitCast( try h( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) ) );
+			const buf = iter.rest();
 
 			_ = try h( linux.sendto( sock, buf.ptr, buf.len, 0, @ptrCast( &dst.sa ), @sizeOf( linux.sockaddr.in ) ) );
 			_ = try h( linux.close( sock ) );
+		} else if ( std.mem.eql( u8, cmd0, "ipaddr" ) ) {
+			const path = try alloc.dupeZ( u8, iter.next() orelse return );
+			defer alloc.free( path );
+
+			const fd: i32 = @bitCast( try h( system.open( path, 0, 0 ) ) );
+			defer _ = system.close( fd );
+
+			var route = net.ipv4.Route {
+				.srcAddress = .{ .val = 0 },
+				.dstNetwork = .{ .val = 0 },
+				.dstMask = .{ .val = 0 },
+				.viaAddress = .{ .val = 0 }
+			};
+
+			if ( iter.next() ) |str| {
+				const addr = std.net.Ip4Address.parse( str, 0 ) catch return;
+				route.srcAddress = .{ .val = addr.sa.addr };
+				route.dstMask = net.ipv4.Mask.init(
+					std.fmt.parseInt( u6, iter.next() orelse return, 0 ) catch return
+				);
+				route.dstNetwork = .{ .val = addr.sa.addr & route.dstMask.val };
+				route.viaAddress = .{ .val = route.dstNetwork.val | ( ( ~route.dstMask.val ) & ( @as( u32, 1 ) << 24 ) ) };
+			}
+
+			_ = try h( system.ioctl( fd, 0, @intFromPtr( &route ) ) );
+			if ( route.srcAddress.val == 0 ) {
+				write( "null\n" );
+			} else {
+				print( "{}\n", .{ route } );
+			}
 		}
 	}
 }

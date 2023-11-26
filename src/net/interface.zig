@@ -3,12 +3,17 @@ const root = @import( "root" );
 const ethernet = @import( "./ethernet.zig" );
 const ipv4 = @import( "./ipv4.zig" );
 const net = @import( "../net.zig" );
+const task = @import( "../task.zig" );
 const vfs = @import( "../vfs.zig" );
 const Device = @import( "./device.zig" ).Device;
 const RingBuffer = @import( "../util/ringBuffer.zig" ).RingBuffer;
 
 var subnet: u8 = 100;
 pub const Interface = struct {
+	const VTable = vfs.VTable {
+		.ioctl = &ioctl
+	};
+
 	arena: std.heap.ArenaAllocator,
 	allocator: std.mem.Allocator,
 	device: Device,
@@ -16,7 +21,7 @@ pub const Interface = struct {
 	fsNode: vfs.Node = undefined,
 	rxQueue: RingBuffer( *align(2) ethernet.FrameOpaque, 8 ),
 
-	ipv4Addr: ?ipv4.Address = null,
+	ipv4Route: ?ipv4.Route = null,
 
 	pub fn init( self: *Interface, allocator: std.mem.Allocator ) void {
 		self.arena = std.heap.ArenaAllocator.init( allocator );
@@ -24,10 +29,15 @@ pub const Interface = struct {
 
 		self.rxQueue = .{};
 
-		self.ipv4Addr = ipv4.Address.init( .{ 192, 168, subnet, 2 } );
+		self.ipv4Route = ipv4.Route {
+			.srcAddress = ipv4.Address.init( .{ 192, 168, subnet, 2 } ),
+			.dstNetwork = ipv4.Address.init( .{ 192, 168, subnet, 0 } ),
+			.dstMask = ipv4.Mask.init( 24 ),
+			.viaAddress = ipv4.Address.init( .{ 192, 168, subnet, 1 } )
+		};
 		subnet += 1;
 
-		self.fsNode.init( subnet - 101, &[4:0]u8 { 'n', 'e', 't', '0' + ( subnet - 101 ) }, .Unknown, self, .{} );
+		self.fsNode.init( subnet - 101, &[4:0]u8 { 'n', 'e', 't', '0' + ( subnet - 101 ) }, .Unknown, self, .{ .ioctl = &ioctl } );
 		vfs.devNode.link( &self.fsNode ) catch unreachable;
 	}
 
@@ -74,5 +84,24 @@ pub const Interface = struct {
 
 		self.fsNode.signal( .{ .read = false } );
 		return null;
+	}
+
+	fn ioctl( node: *vfs.Node, _: *vfs.FileDescriptor, cmd: u32, arg: usize ) task.Error!i32 {
+		const self: *Interface = @alignCast( @ptrCast( node.ctx ) );
+
+		if ( cmd == 0 ) {
+			const ptr: *align(1) ipv4.Route = @ptrFromInt( arg );
+			if ( ptr.srcAddress.val == 0 ) {
+				if ( self.ipv4Route ) |route| {
+					ptr.* = route;
+				}
+			} else {
+				self.ipv4Route = ptr.*;
+			}
+
+			return 0;
+		}
+
+		return task.Error.PermissionDenied;
 	}
 };

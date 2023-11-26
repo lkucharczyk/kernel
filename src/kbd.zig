@@ -100,7 +100,7 @@ var state = State {};
 var fsNode: vfs.Node = undefined;
 
 fn onKey( _: *x86.State ) void {
-	var code = x86.in( u8, 0x60 );
+	const code = x86.in( u8, 0x60 );
 
 	if ( state.extendedMode ) {
 		state.extendedMode = false;

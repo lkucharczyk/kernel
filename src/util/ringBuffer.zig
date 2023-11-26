@@ -75,8 +75,8 @@ pub fn RingBufferExt( comptime S: comptime_int, comptime P: comptime_int ) type 
 				// @memset( self.data[self.pos..( self.pos + buf.len )], 0 );
 				self.pos += buf.len;
 			} else {
-				var s1: usize = S - self.pos;
-				var s2: usize = buf.len - s1;
+				const s1: usize = S - self.pos;
+				const s2: usize = buf.len - s1;
 
 				@memcpy( buf[0..s1], self.data[self.pos..S] );
 				// @memset( self.data[self.pos..S], 0 );

@@ -58,7 +58,7 @@ fn getSymbol( address: usize ) ?Symbol {
 		and !std.mem.eql( u8, ptr[2..6], &[_]u8{ 0xde, 0xad, 0xbe, 0xef } )
 		and !std.mem.eql( u8, ptr[3..7], &[_]u8{ 0xde, 0xad, 0xbe, 0xef } )
 	) {
-		var symbol = Symbol {
+		const symbol = Symbol {
 			.address = @byteSwap( @as( *const align(1) u32, @ptrCast( &ptr[0] ) ).* ),
 			.size    = @byteSwap( @as( *const align(1) u32, @ptrCast( &ptr[4] ) ).* ),
 			.name    = std.mem.sliceTo( ptr[8..], '\n' )

@@ -24,12 +24,16 @@ const FdWait = struct {
 };
 
 pub const PollFd = extern struct {
-	const Events = packed struct(u16) {
+	pub const Events = packed struct(u16) {
 		read: bool = false,
 		priority: bool = false,
 		write: bool = false,
 		err: bool = false,
-		_: u12 = 0
+		_: u12 = 0,
+
+		pub fn any( self: Events ) bool {
+			return @as( u16, @bitCast( self ) ) > 0;
+		}
 	};
 
 	fd: u32,
@@ -53,7 +57,7 @@ pub const PollFd = extern struct {
 	}
 };
 
-const PollWait = struct {
+pub const PollWait = struct {
 	fd: []PollFd,
 
 	pub fn ready( self: *PollWait, task: *Task ) bool {
@@ -108,13 +112,14 @@ pub const Error = error {
 	NotSocket,
 	ProtocolNotSupported,
 	AddressFamilyNotSupported,
-	AddressInUse
+	AddressInUse,
+	NoRouteToHost
 };
 
 pub const Errno = enum(i16) {
-	Success                   =  0,
+	Success                   = 0,
 	/// EBADF
-	BadFileDescriptor         =  9,
+	BadFileDescriptor         = 9,
 	/// ENOMEM
 	OutOfMemory               = 12,
 	/// EACCES
@@ -131,6 +136,8 @@ pub const Errno = enum(i16) {
 	AddressFamilyNotSupported = 97,
 	/// EADDRINUSE
 	AddressInUse              = 98,
+	/// EHOSTUNREACH
+	NoRouteToHost             = 113,
 
 	pub fn fromError( self: Error ) Errno {
 		return switch ( self ) {
@@ -142,7 +149,8 @@ pub const Errno = enum(i16) {
 			Error.NotSocket                 => .NotSocket,
 			Error.ProtocolNotSupported      => .ProtocolNotSupported,
 			Error.AddressFamilyNotSupported => .AddressFamilyNotSupported,
-			Error.AddressInUse              => .AddressInUse
+			Error.AddressInUse              => .AddressInUse,
+			Error.NoRouteToHost             => .NoRouteToHost
 		};
 	}
 
@@ -300,7 +308,7 @@ pub const Task = struct {
 		currentTask = kernelTask;
 
 		asm volatile ( "jmp task_end" );
-		x86.halt();
+		unreachable;
 	}
 
 	pub fn addFd( self: *Task, node: *vfs.Node ) error{ OutOfMemory }!isize {
@@ -381,7 +389,7 @@ pub fn createElf( stream: anytype, args: []const [*:0]const u8 ) !void {
 
 	while ( sections.next() catch |err| return err ) |section| {
 		if ( ( section.sh_flags & std.elf.SHF_ALLOC ) > 0 ) {
-			var ptr = @as( [*]u8, @ptrFromInt( @as( usize, @truncate( section.sh_addr ) ) ) )[0..@truncate( section.sh_size )];
+			const ptr = @as( [*]u8, @ptrFromInt( @as( usize, @truncate( section.sh_addr ) ) ) )[0..@truncate( section.sh_size )];
 
 			task.memBreak = std.mem.alignForward( usize, @max( task.memBreak, @intFromPtr( ptr.ptr + ptr.len ) ), 4096 );
 			while ( task.memBreak >= 0x40_0000 * task.memPages.items.len ) {

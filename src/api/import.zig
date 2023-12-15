@@ -12,8 +12,19 @@ pub const os = struct {
 	pub const system = @import( "./system.zig" );
 };
 
-export fn _start( argc: usize, argv: [*][*:0]u8 ) void {
-	std.os.argv = argv[0..argc];
+var _argptr: [*]usize = undefined;
+
+export fn _start() callconv(.Naked) noreturn {
+	asm volatile (
+		\\ movl %%esp, %[argptr]
+		\\ calll %[start:P]
+		: [argptr] "=m" ( _argptr )
+		: [start] "X" ( &_start2 )
+	);
+}
+
+fn _start2() callconv(.C) void {
+	std.os.argv = @as( [*][*:0]u8, @ptrCast( _argptr[1..] ) )[0.._argptr[0]];
 	@import( "root" ).main() catch |err| @panic( @errorName( err ) );
 	std.os.system.exit( 0 );
 }

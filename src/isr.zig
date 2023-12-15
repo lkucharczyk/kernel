@@ -4,12 +4,12 @@ const irq = @import( "./irq.zig" );
 const x86 = @import( "./x86.zig" );
 
 export fn isrPanicWrapper() callconv(.Naked) noreturn {
-	x86.saveState( true );
+	x86.saveState();
 	asm volatile ( "call isrPanic" );
 }
 
 export fn irqHandlerWrapper() callconv(.Naked) noreturn {
-	x86.saveState( true );
+	x86.saveState();
 	asm volatile ( "call irqHandler" );
 	x86.restoreState();
 	asm volatile ( "iret" );

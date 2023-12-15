@@ -137,6 +137,8 @@ fn onKey( _: *x86.State ) void {
 			if ( char != 0 ) {
 				if ( state.ctrlLeft and ( char == 'c' or char == 'C' ) ) {
 					char = 0x03;
+				} else if ( state.ctrlLeft and ( char == 'd' or char == 'D' ) ) {
+					char = 0x04;
 				}
 
 				_ = state.buffer.push( char );

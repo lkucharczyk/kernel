@@ -8,6 +8,7 @@ pub const Segment = struct {
 	pub const USER_CODE   = 3 << 3;
 	pub const USER_DATA   = 4 << 3;
 	pub const TSS         = 5 << 3;
+	pub const TLS         = 6 << 3;
 };
 
 pub const Entry = packed struct(u64) {
@@ -140,7 +141,7 @@ pub const Tss = extern struct {
 	tail:   u8 align(1) = 0xff
 };
 
-var table: [6]Entry = undefined;
+pub var table: [7]Entry = undefined;
 var ptr: x86.TablePtr = undefined;
 pub var tss: Tss = .{};
 
@@ -151,8 +152,9 @@ pub fn init() void {
 	table[3].set( 0, 0xfffff, Entry.Access.USER_CODE, .{} );
 	table[4].set( 0, 0xfffff, Entry.Access.USER_DATA, .{} );
 	table[5].set( @intFromPtr( &tss ), @sizeOf( Tss ), Entry.Access.TSS, @bitCast( @as( u4, 0 ) ) );
+	table[6].access.present = false;
 
-	ptr = x86.TablePtr.init( Entry, 6, &table );
+	ptr = x86.TablePtr.init( Entry, table.len, &table );
 	asm volatile ( "lgdt (%%eax)" :: [ptr] "{eax}" ( @intFromPtr( &ptr ) - mem.ADDR_KMAIN_OFFSET ) );
 	asm volatile ( "ltr %%ax" :: [id] "{ax}" ( Segment.TSS ) );
 

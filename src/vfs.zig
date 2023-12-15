@@ -1,6 +1,7 @@
 const std = @import( "std" );
 const root = @import( "root" );
 const task = @import( "./task.zig" );
+const AnySeekableStream = @import( "./util/stream.zig" ).AnySeekableStream;
 const RootVfs = @import( "./fs/root.zig" ).RootVfs;
 
 pub const VTable = struct {
@@ -217,6 +218,10 @@ pub const FileDescriptor = struct {
 		return null;
 	}
 
+	pub inline fn close( self: *FileDescriptor ) void {
+		self.node.close( self );
+	}
+
 	pub fn read( self: *FileDescriptor, buf: []u8 ) error{}!u32 {
 		return self.node.read( self, buf );
 	}
@@ -225,8 +230,42 @@ pub const FileDescriptor = struct {
 		return self.node.write( self, buf );
 	}
 
-	pub fn reader( self: *FileDescriptor ) std.io.Reader( *FileDescriptor, error{}, read ) {
-		return .{ .context = self };
+	pub fn getEndPos( self: *FileDescriptor ) error{}!u64 {
+		_ = self;
+		return 0;
+	}
+
+	pub fn getPos( self: *FileDescriptor ) error{}!u64 {
+		return self.offset;
+	}
+
+	pub fn seekBy( self: *FileDescriptor, offset: i64 ) error{}!void {
+		if ( offset < 0 ) {
+			self.offset -|= @as( usize, @truncate( @abs( offset ) ) );
+		} else {
+			self.offset +|= @as( usize, @truncate( @abs( offset ) ) );
+		}
+	}
+
+	pub fn seekTo( self: *FileDescriptor, offset: u64 ) error{}!void {
+		self.offset = @truncate( offset );
+	}
+
+	pub fn reader( self: *FileDescriptor ) std.io.AnyReader {
+		return .{
+			.context = self,
+			.readFn = @ptrCast( &read )
+		};
+	}
+
+	pub fn seekableStream( self: *FileDescriptor ) AnySeekableStream {
+		return .{
+			.context = self,
+			.fnGetEndPos = @ptrCast( &getEndPos ),
+			.fnGetPos = @ptrCast( &getPos ),
+			.fnSeekBy = @ptrCast( &seekBy ),
+			.fnSeekTo = @ptrCast( &seekTo )
+		};
 	}
 };
 

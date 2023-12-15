@@ -119,14 +119,7 @@ pub inline fn out( comptime T: type, port: u16, val: T ) void {
 	}
 }
 
-pub inline fn saveState( comptime inInt: bool ) void {
-	if ( !inInt ) {
-		asm volatile (
-			\\ pushl $0
-			\\ pushl $0
-		);
-	}
-
+pub inline fn saveState() void {
 	asm volatile (
 		\\ pusha
 		\\ push %%ds
@@ -153,5 +146,14 @@ pub inline fn restoreState() void {
 		\\ popa
 		\\ addl $8, %%esp
 		::: "memory"
+	);
+}
+
+pub inline fn invalidateTlb() void {
+	asm volatile (
+		\\ mov %%cr3, %[tmp]
+		\\ mov %[tmp], %%cr3
+		:: [tmp] "r" ( 0 )
+		: "memory"
 	);
 }

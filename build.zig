@@ -11,7 +11,8 @@ fn getQemu( b: *std.Build, comptime arch: std.Target.Cpu.Arch, comptime debug: b
 		"sh", "-c",
 		bin
 			++ " -kernel ./zig-out/bin/kernel.elf"
-			++ " -initrd ./zig-out/bin/shell.elf"
+			++ " -initrd \"./zig-out/bin/kernel.dbg,./zig-out/bin/shell.elf,./vendor/sbase/sbase-box\""
+			++ " -m 512M"
 			++ " -vga virtio"
 			++ " -device isa-debug-exit"
 			++ ( " -serial vc" ** 4 )
@@ -26,6 +27,13 @@ fn getQemu( b: *std.Build, comptime arch: std.Target.Cpu.Arch, comptime debug: b
 	} );
 
 	return qemu;
+}
+
+fn setCcEnv( step: *std.Build.Step.Run, comptime arch: std.Target.Cpu.Arch ) void {
+	_ = arch;
+	step.setEnvironmentVariable( "AR", "zig ar" );
+	step.setEnvironmentVariable( "CC", "zig cc -static -target x86-freestanding-none" );
+	step.setEnvironmentVariable( "RANLIB", "zig ranlib" );
 }
 
 pub fn build( b: *std.Build ) !void {
@@ -49,6 +57,7 @@ pub fn build( b: *std.Build ) !void {
 		.optimize = optimize
 	} );
 	kernel.code_model = .kernel;
+	kernel.compress_debug_sections = .zlib;
 	kernel.setLinkerScript( .{ .path = "src/linker.ld" } );
 	b.installArtifact( kernel );
 
@@ -60,7 +69,27 @@ pub fn build( b: *std.Build ) !void {
 		.target = target,
 		.optimize = optimize
 	} );
+	shell.compress_debug_sections = .zlib;
 	b.installArtifact( shell );
+
+	var libcConfig = b.addSystemCommand( &.{ "./configure", "--prefix=../../zig-out/sys/", "--target=i386-freestanding-none", "--disable-shared" } );
+	setCcEnv( libcConfig, arch );
+	libcConfig.setCwd( .{ .path = "vendor/musl/" } );
+
+	const libc = b.addSystemCommand( &.{ "make", "-j", "install" } );
+	libc.setCwd( .{ .path = "vendor/musl/" } );
+	if ( ( std.fs.cwd().statFile( "./vendor/musl/config.mak" ) catch null ) == null ) {
+		libc.step.dependOn( &libcConfig.step );
+	}
+	b.getInstallStep().dependOn( &libc.step );
+
+	const sbase = b.addSystemCommand( &.{ "make", "-j", "sbase-box" } );
+	sbase.step.dependOn( &libc.step );
+	sbase.setCwd( .{ .path = "vendor/sbase/" } );
+	setCcEnv( sbase, arch );
+	sbase.setEnvironmentVariable( "CFLAGS", "-march=i486 -isystem ../../zig-out/sys/include/ -include ../../zig-out/sys/include/limits.h" );
+	sbase.setEnvironmentVariable( "LDFLAGS", "-L../../zig-out/sys/lib/ ../../zig-out/sys/lib/libc.a ../../zig-out/sys/lib/crt1.o" );
+	b.getInstallStep().dependOn( &sbase.step );
 
 	const embedSymbols = b.addSystemCommand( &.{
 		"sh", "-c",
@@ -71,8 +100,9 @@ pub fn build( b: *std.Build ) !void {
 			++ "| sed -nr 's/^([0-9a-f]+).*?\\t([0-9a-f]+) (.+)$/\\1 \\2 \\3/p'"
 			++ "| sort"
 			++ "| tee ./zig-cache/symbolmap.txt"
-			++ "| grep -vP '__anon_\\d+|\\d+\\.stub|hash_map'"
+			++ "| grep -vP '__anon_\\d+|\\d+\\.stub|hash_map|__zig'"
 			++ "| sed -r 's/Allocator\\(\\.\\{[^}]+\\}\\)/Allocator(.{ ... })/'"
+			++ "| sed -r 's/MemoryPoolExtra\\(([^,]+),\\.\\{[^}]+\\}\\)/MemoryPoolExtra(\\1,.{ ... })/'"
 			++ "| tee ./zig-cache/symbolmap-filtered.txt"
 			++ "| LC_CTYPE=c awk '{" ++
 				\\ for ( i = 0; i < 4; ++i ) {
@@ -90,15 +120,29 @@ pub fn build( b: *std.Build ) !void {
 				++ "| awk '{ print strtonum( \"0x\" $1 ) - 0xc0100000 + 0x1000 }'"
 			++ ")"
 	} );
-	embedSymbols.step.dependOn( b.getInstallStep() );
+	embedSymbols.step.dependOn( &kernel.step );
+	b.getInstallStep().dependOn( &embedSymbols.step );
+
+	const genSymbols = b.addSystemCommand( &.{
+		"objcopy", "--only-keep-debug", "./zig-out/bin/kernel.elf", "./zig-out/bin/kernel.dbg"
+	} );
+	genSymbols.step.dependOn( &kernel.step );
+	b.getInstallStep().dependOn( &genSymbols.step );
 
 	const qemu = getQemu( b, arch, false );
-	qemu.step.dependOn( &embedSymbols.step );
+	qemu.step.dependOn( b.getInstallStep() );
 	const run = b.step( "run", "Run kernel in QEMU" );
 	run.dependOn( &qemu.step );
 
 	const qemuDebug = getQemu( b, arch, true );
-	qemuDebug.step.dependOn( &embedSymbols.step );
+	qemuDebug.step.dependOn( b.getInstallStep() );
 	const runDebug = b.step( "debug", "Run kernel in QEMU (w/ GDB)" );
 	runDebug.dependOn( &qemuDebug.step );
+
+	const libcClean = b.addSystemCommand( &.{ "make", "clean" } );
+	libcClean.setCwd( .{ .path = "./vendor/musl/" } );
+	const sbaseClean = b.addSystemCommand( &.{ "make", "clean" } );
+	sbaseClean.setCwd( .{ .path = "./vendor/sbase/" } );
+	b.getUninstallStep().dependOn( &libcClean.step );
+	b.getUninstallStep().dependOn( &sbaseClean.step );
 }

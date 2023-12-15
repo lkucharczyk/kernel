@@ -1,24 +1,34 @@
 const std = @import( "std" );
 const root = @import( "root" );
+const gdt = @import( "./gdt.zig" );
 const irq = @import( "./irq.zig" );
 const task = @import( "./task.zig" );
 const mem = @import( "./mem.zig" );
 const net = @import( "./net.zig" );
+const vfs = @import( "./vfs.zig" );
 const x86 = @import( "./x86.zig" );
 
 pub const Syscall = enum(u32) {
-	Read     = 0,
-	Write    = 1,
-	Open     = 2,
-	Close    = 3,
-	Poll     = 7,
-	Brk      = 12,
-	IoCtl    = 16,
-	Socket   = 41,
-	SendTo   = 44,
-	RecvFrom = 45,
-	Bind     = 49,
-	Exit     = 60,
+	Read          = 0,
+	Write         = 1,
+	Open          = 2,
+	Close         = 3,
+	Poll          = 7,
+	LSeek         = 8,
+	MMap          = 9,
+	Brk           = 12,
+	IoCtl         = 16,
+	WriteV        = 20,
+	GetPid        = 39,
+	Socket        = 41,
+	SendTo        = 44,
+	RecvFrom      = 45,
+	Bind          = 49,
+	Fork          = 57,
+	VFork         = 58,
+	ExecVE        = 59,
+	Exit          = 60,
+	SetThreadArea = 205,
 	_
 };
 
@@ -26,12 +36,17 @@ fn handlerIrq( state: *x86.State ) void {
 	var args: [6]usize = .{ state.ebx, state.ecx, state.edx, state.esi, state.edi, state.ebp };
 	const id: Syscall = switch ( state.eax ) {
 		1 => Syscall.Exit,
+		2 => Syscall.Fork,
 		3 => Syscall.Read,
 		4 => Syscall.Write,
 		5 => Syscall.Open,
 		6 => Syscall.Close,
+		11 => Syscall.ExecVE,
+		19 => Syscall.LSeek,
+		20 => Syscall.GetPid,
 		45 => Syscall.Brk,
 		54 => Syscall.IoCtl,
+		90 => Syscall.MMap,
 		102 => _: {
 			const argPtr: [*]u32 = @ptrFromInt( state.ecx );
 			var argCount: u8 = 0;
@@ -63,45 +78,80 @@ fn handlerIrq( state: *x86.State ) void {
 
 			break :_ argId;
 		},
+		146 => Syscall.WriteV,
 		168 => Syscall.Poll,
+		190 => Syscall.VFork,
+		243 => Syscall.SetThreadArea,
 		359 => Syscall.Socket,
 		361 => Syscall.Bind,
 		369 => Syscall.SendTo,
 		371 => Syscall.RecvFrom,
+
+		// TODO: .Mmap2 (arg[5] *= 4096 -> .MMap)
+		192 => Syscall.MMap,
+
 		else => {
-			root.log.printUnsafe( "syscall: task:{} Unknown:{}\n", .{ task.currentTask.id, state.eax } );
-			state.eax = @as( u32, @bitCast( @as( i32, -1 ) ) );
+			root.log.printUnsafe( "syscall: task:{} Unknown:{}() => {}\n", .{ task.currentTask.id, state.eax, task.Errno.NotImplemented } );
+			state.eax = @bitCast( task.Errno.NotImplemented.getResult() );
 			return;
 		}
 	};
 
-	state.eax = @bitCast( handlerWrapper( id, args ) );
+	state.eax = @bitCast( handlerWrapper( id, args, state ) );
+}
+
+fn validateAddr( ptr: usize ) bool {
+	return ptr != 0 and ( task.currentTask.kernelMode or task.currentTask.mmap.containsAddr( ptr ) );
+}
+
+fn validateSlice( ptr: usize, len: usize ) bool {
+	return ptr != 0 and ( task.currentTask.kernelMode or task.currentTask.mmap.containsSlice( ptr, len ) );
+}
+
+fn extractPtr( comptime T: type, ptr: usize ) error{ InvalidPointer }!*T {
+	if ( !validateAddr( ptr ) ) {
+		return task.Error.InvalidPointer;
+	}
+
+	return @ptrFromInt( ptr );
 }
 
 fn extractSlice( comptime T: type, ptr: usize, len: usize ) error{ InvalidPointer }![]T {
-	if ( ptr == 0 ) {// or ( !task.currentTask.kernelMode and ptr + len >= task.currentTask.memBreak ) ) {
+	if ( !validateSlice( ptr, len ) ) {
 		return task.Error.InvalidPointer;
 	}
 
 	return @as( [*]T, @ptrFromInt( ptr ) )[0..len];
 }
 
-fn extractCStr( ptr: usize ) error{ InvalidPointer }![]const u8 {
+fn extractSliceZ( comptime T: type, comptime S: T, ptr: usize ) error{ InvalidPointer }![]T {
 	if ( ptr == 0 ) {
 		return error.InvalidPointer;
 	}
 
-	const str = @as( [*:0]const u8, @ptrFromInt( ptr ) );
-	return str[0..std.mem.indexOfSentinel( u8, 0, str )];
+	const data = @as( [*:S]T, @ptrFromInt( ptr ) );
+	const len = std.mem.len( data );
+
+	if ( !validateSlice( ptr, len ) ) {
+		return task.Error.InvalidPointer;
+	}
+
+	return data[0..len];
 }
 
-pub fn handlerWrapper( id: Syscall, args: [6]usize ) isize {
-	if ( ( id != .Read and id != .Write ) or args[0] > 2 ) {
+inline fn extractCStr( ptr: usize ) error{ InvalidPointer }![]const u8 {
+	return extractSliceZ( u8, 0, ptr );
+}
+
+pub var enableStrace: bool = true;
+pub fn handlerWrapper( id: Syscall, args: [6]usize, state: ?*x86.State ) isize {
+	const strace = ( ( id != .Read and id != .Write and id != .WriteV ) or args[0] > 2 ) and enableStrace;
+	if ( strace ) {
 		root.log.printUnsafe( "syscall: task:{} {s}(", .{ task.currentTask.id, @tagName( id ) } );
 	}
 
-	if ( handler( id, args ) ) |val| {
-		if ( ( id != .Read and id != .Write ) or args[0] > 2 ) {
+	if ( handler( id, args, state, strace ) ) |val| {
+		if ( strace ) {
 			if ( val < 0x10000 ) {
 				root.log.printUnsafe( ") => {}\n", .{ val } );
 			} else {
@@ -111,23 +161,22 @@ pub fn handlerWrapper( id: Syscall, args: [6]usize ) isize {
 
 		return val;
 	} else |err| {
-		task.currentTask.errno = task.Errno.fromError( err );
-		const val: isize = task.currentTask.errno.getResult();
+		const errno = task.Errno.fromError( err );
 
-		if ( ( id != .Read and id != .Write ) or args[0] > 2 ) {
-			root.log.printUnsafe( ") => {} ({})\n", .{ val, task.currentTask.errno } );
+		if ( strace ) {
+			root.log.printUnsafe( ") => {}\n", .{ errno } );
 		}
 
-		return val;
+		return errno.getResult();
 	}
 }
 
-fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
+fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task.Error!isize {
 	return switch ( id ) {
 		// read( fd, bufPtr, bufLen )
 		.Read => _: {
-			if ( args[0] > 2 ) {
-				root.log.printUnsafe( " {} ", .{ args[0] } );
+			if ( strace ) {
+				root.log.printUnsafe( " {}, [0x{x}]u8@0x{x} ", .{ args[0], args[2], args[1] } );
 			}
 
 			const fd = try task.currentTask.getFd( args[0] );
@@ -137,8 +186,8 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 		},
 		// write( fd, bufPtr, bufLen )
 		.Write => _: {
-			if ( args[0] > 2 ) {
-				root.log.printUnsafe( " {} ", .{ args[0] } );
+			if ( strace ) {
+				root.log.printUnsafe( " {}, [0x{x}]u8@0x{x} ", .{ args[0], args[2], args[1] } );
 			}
 
 			const fd = try task.currentTask.getFd( args[0] );
@@ -149,20 +198,23 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 		// open( pathPtr, flags, mode )
 		.Open => _: {
 			const path = ( try extractCStr( args[0] ) )[1..];
-			root.log.printUnsafe( " \"/{s}\", {}, {} ", .{ path, args[1], args[2] } );
+			if ( strace ) {
+				root.log.printUnsafe( " \"/{s}\", {}, {} ", .{ path, args[1], args[2] } );
+			}
 
-			if ( @import( "./vfs.zig" ).rootNode.resolveDeep( path ) ) |node| {
+			if ( vfs.rootNode.resolveDeep( path ) ) |node| {
 				break :_ task.currentTask.addFd( node );
 			}
 
-			break :_ task.Error.PermissionDenied;
+			break :_ task.Error.MissingFile;
 		},
 		// close( fd )
 		.Close => _: {
-			root.log.printUnsafe( " {} ", .{ args[0] } );
+			if ( strace ) {
+				root.log.printUnsafe( " {} ", .{ args[0] } );
+			}
 
-			const fd = try task.currentTask.getFd( args[0] );
-			fd.node.close( fd );
+			( try task.currentTask.getFd( args[0] ) ).close();
 			task.currentTask.fd.items[args[0]] = null;
 			break :_ 0;
 		},
@@ -170,16 +222,22 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 		.Poll => _: {
 			const fd = try extractSlice( task.PollFd, args[0], args[1] );
 			const timeout: i32 = @bitCast( args[2] );
-			root.log.printUnsafe( " [{}]{*}, {} ", .{ fd.len, fd.ptr, timeout } );
+			if ( strace ) {
+				root.log.printUnsafe( " [{}]{*}, {} ", .{ fd.len, fd.ptr, timeout } );
+			}
+
+			const kfd = try root.kheap.dupe( task.PollFd, fd );
+			defer root.kheap.free( kfd );
 
 			var out: i32 = 0;
-			if ( fd.len > 0 ) {
-				var wait = task.PollWait { .fd = fd };
-				if ( !wait.ready( task.currentTask ) ) {
+			if ( kfd.len > 0 ) {
+				var wait = task.PollWait { .fd = kfd };
+				if ( !wait.ready( task.currentTask ) and timeout != 0 ) {
 					task.currentTask.park( .{ .poll = wait } );
 				}
 			}
 
+			@memcpy( fd, kfd );
 			for ( fd ) |f| {
 				if ( @as( u16, @bitCast( f.retEvents ) ) > 0 ) {
 					out +|= 1;
@@ -188,41 +246,110 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 
 			break :_ out;
 		},
+		// lseek( fd, offset, whence )
+		.LSeek => _: {
+			if ( strace ) {
+				root.log.printUnsafe( " {}, 0x{x}, {} ", .{ args[0], args[1], args[2] } );
+			}
+
+			const fd = try task.currentTask.getFd( args[0] );
+			if ( args[2] == std.os.linux.SEEK.SET ) {
+				try fd.seekTo( args[1] );
+			} else if ( args[2] == std.os.linux.SEEK.CUR ) {
+				try fd.seekBy( args[1] );
+			} else {
+				break :_ task.Error.NotImplemented;
+			}
+
+			break :_ @bitCast( fd.offset );
+		},
+		// mmap( ?addr, len, prot, flags, ?fd, ?offset )
+		.MMap => _: {
+			if ( strace ) {
+				root.log.printUnsafe( " 0x{x}, 0x{x}, {}, {}, {}, 0x{x} ", .{ args[0], args[1], args[2], args[3], @as( i32, @bitCast( args[4] ) ), args[5] } );
+			}
+
+			if (
+				args[0] != 0
+				or args[1] == 0
+				or ( args[2] & ~@as( usize, std.os.linux.PROT.READ | std.os.linux.PROT.WRITE ) ) != 0
+				or args[3] != ( std.os.linux.MAP.ANONYMOUS | std.os.linux.MAP.PRIVATE )
+				or @as( i32, @bitCast( args[4] ) ) != -1
+				or args[5] != 0
+			) {
+				break :_ task.Error.InvalidArgument;
+			}
+
+			break :_ handler( .Brk, .{ task.currentTask.programBreak + args[1], 0, 0, 0, 0, 0 }, state, false );
+		},
+		// getpid()
+		.GetPid => @as( i32, @intCast( task.currentTask.id ) ),
 		// brk( addr )
 		.Brk => _: {
-			root.log.printUnsafe( " 0x{x} ", .{ args[0] } );
+			if ( strace ) {
+				root.log.printUnsafe( " 0x{x} ", .{ args[0] } );
+			}
+			const prevBrk = task.currentTask.programBreak;
 
-			if ( args[0] == 0 ) {
-				break :_ @bitCast( task.currentTask.memBreak );
+			if ( args[0] > prevBrk ) {
+				if ( try task.currentTask.mmap.alloc( prevBrk, args[0] - prevBrk ) ) {
+					task.currentTask.map();
+				}
+
+				@memset( @as( [*]u8, @ptrFromInt( prevBrk ) )[0..( args[0] - prevBrk )], 0 );
+				task.currentTask.programBreak = args[0];
+			} else if ( args[0] > 0 and args[0] < prevBrk ) {
+				if ( task.currentTask.mmap.free( args[0], prevBrk - args[0] ) ) {
+					task.currentTask.map();
+				}
+
+				task.currentTask.programBreak = args[0];
 			}
 
-			const pages: usize = @max( 1, @min( 10, std.mem.alignForwardLog2( args[0], 22 ) >> 22 ) );
-
-			const prevBrk = task.currentTask.memBreak;
-			while ( task.currentTask.memPages.items.len > pages ) {
-				mem.freePhysical( task.currentTask.memPages.pop() );
-			}
-
-			while ( task.currentTask.memPages.items.len < pages ) {
-				try task.currentTask.memPages.append( root.kheap, try mem.allocPhysical() );
-			}
-
-			task.currentTask.memBreak = args[0];
-			task.currentTask.map();
 			break :_ @bitCast( prevBrk );
 		},
 		// ioctl( fd, cmd, arg )
 		.IoCtl => _: {
-			root.log.printUnsafe( " {}, {}, {} ", .{ args[0], args[1], args[2] } );
+			if ( strace ) {
+				root.log.printUnsafe( " {}, ", .{ args[0] } );
+
+				switch ( args[1] ) {
+					std.os.linux.T.IOCGWINSZ => root.log.writeUnsafe( "TIOCGWINSZ" ),
+					else => root.log.printUnsafe( "0x{x}", .{ args[1] } )
+				}
+
+				root.log.printUnsafe( ", 0x{x} ", .{ args[2] } );
+			}
 
 			const fd = try task.currentTask.getFd( args[0] );
-			break :_ ( fd.node.vtable.ioctl orelse break :_ error.PermissionDenied )( fd.node, fd, args[1], args[2] );
+			break :_ ( fd.node.vtable.ioctl orelse break :_ error.BadFileDescriptor )( fd.node, fd, args[1], args[2] );
+		},
+		// writev( fd, iovecPtr, iovecLen )
+		.WriteV => _: {
+			const iovec = try extractSlice( std.os.iovec_const, args[1], args[2] );
+			if ( strace ) {
+				root.log.printUnsafe( " {}, [{}]{any} ", .{ args[0], args[2], iovec } );
+			}
+
+			const fd = try task.currentTask.getFd( args[0] );
+			var out: usize = 0;
+			for ( iovec ) |iov| {
+				if ( iov.iov_len > 0 ) {
+					const buf = try extractSlice( u8, @intFromPtr( iov.iov_base ), iov.iov_len );
+					out += fd.write( buf );
+				}
+			}
+
+			break :_ @bitCast( out );
 		},
 		// socket( family, type, protocol )
 		.Socket => _: {
 			const family: net.sockaddr.Family = @enumFromInt( args[0] );
 			const protocol: net.ipv4.Protocol = @enumFromInt( args[2] );
-			root.log.printUnsafe( " {}, {}, {} ", .{ family, args[1], protocol } );
+
+			if ( strace ) {
+				root.log.printUnsafe( " {}, {}, {} ", .{ family, args[1], protocol } );
+			}
 
 			const node = try net.createSocket( family, args[1], protocol );
 			break :_ task.currentTask.addFd( node );
@@ -237,7 +364,9 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 				@as( [*]const u8, @ptrFromInt( args[1] ) )[0..mlen]
 			);
 
-			root.log.printUnsafe( " {}, {} ", .{ args[0], sockaddr } );
+			if ( strace ) {
+				root.log.printUnsafe( " {}, {} ", .{ args[0], sockaddr } );
+			}
 
 			const fd = try task.currentTask.getFd( args[0] );
 			const socket = fd.getSocket() orelse break :_ task.Error.NotSocket;
@@ -256,7 +385,9 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 				try extractSlice( u8, args[4], mlen )
 			);
 
-			root.log.printUnsafe( " {}, \"{s}\", {}, {} ", .{ args[0], buf, args[3], sockaddr } );
+			if ( strace ) {
+				root.log.printUnsafe( " {}, \"{s}\", {}, {} ", .{ args[0], buf, args[3], sockaddr } );
+			}
 
 			const fd = try task.currentTask.getFd( args[0] );
 			const socket = fd.getSocket() orelse break :_ task.Error.NotSocket;
@@ -268,7 +399,10 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 			var buf = try extractSlice( u8, args[1], args[2] );
 			const addr: ?*align(1) net.Sockaddr = @ptrFromInt( args[4] );
 			const addrlen: ?*align(1) u32 = @ptrFromInt( args[5] );
-			root.log.printUnsafe( " {}, [{}]{*}, {}, {*}, {*} ", .{ args[0], buf.len, buf, args[3], addr, addrlen } );
+
+			if ( strace ) {
+				root.log.printUnsafe( " {}, [{}]{*}, {}, {*}, {*} ", .{ args[0], buf.len, buf, args[3], addr, addrlen } );
+			}
 
 			const fd = try task.currentTask.getFd( args[0] );
 			const socket = fd.getSocket() orelse break :_ task.Error.NotSocket;
@@ -292,15 +426,125 @@ fn handler( id: Syscall, args: [6]usize ) task.Error!isize {
 
 			break :_ @bitCast( out.data.len );
 		},
+		.Fork => _: {
+			if ( state == null ) {
+				break :_ task.Error.PermissionDenied;
+			}
+
+			break :_ ( try task.currentTask.fork( state.? ) ).id;
+		},
+		.VFork => _: {
+			if ( state == null ) {
+				break :_ task.Error.PermissionDenied;
+			}
+
+			if ( strace ) {
+				root.log.printUnsafe( "\n", .{} );
+			}
+
+			const fork = try task.currentTask.fork( state.? );
+			const pid = fork.id;
+
+			task.currentTask.park( .{ .task = fork } );
+
+			break :_ pid;
+		},
+		.ExecVE => _: {
+			if ( state == null ) {
+				break :_ task.Error.PermissionDenied;
+			}
+
+			const path = try extractCStr( args[0] );
+
+			var arena = std.heap.ArenaAllocator.init( root.kheap );
+			const alloc = arena.allocator();
+			defer arena.deinit();
+
+			var execArgs = [2][][*:0]const u8 { &.{}, &.{} };
+			inline for ( 0..2 ) |i| {
+				if ( args[i + 1] != 0 ) {
+					const slice: []?[*:0]const u8 = try extractSliceZ( ?[*:0]const u8, null, args[i + 1] );
+					execArgs[i] = try alloc.alloc( [*:0]const u8, slice.len );
+					for ( 0..slice.len ) |j| {
+						execArgs[i][j] = try alloc.dupeZ( u8, try extractCStr( @intFromPtr( slice[j].? ) ) );
+					}
+				}
+			}
+
+			if ( strace ) {
+				root.log.printUnsafe( " \"{s}\", [{}]{s}, [{}]{s} ", .{ path, execArgs[0].len, execArgs[0], execArgs[1].len, execArgs[1] } );
+			}
+
+			if ( vfs.rootNode.resolveDeep( path[1..] ) ) |node| {
+				const fd = try node.open();
+				defer fd.close();
+
+				for ( task.currentTask.mmap.entries.items ) |e| {
+					mem.freePhysical( e.phys );
+				}
+
+				if ( task.currentTask.bin ) |prev| {
+					root.kheap.free( prev );
+				}
+				task.currentTask.bin = try root.kheap.dupeZ( u8, path );
+
+				task.currentTask.loadElf( fd.reader(), fd.seekableStream(), execArgs ) catch break :_ error.IoError;
+				x86.disableInterrupts();
+
+				state.?.eip = @intFromPtr( task.currentTask.entrypoint );
+				state.?.uesp = task.currentTask.stackBreak;
+				state.?.ebp = task.currentTask.stackBreak;
+
+				task.currentTask.map();
+
+				break :_ 0;
+			}
+
+			break :_ error.PermissionDenied;
+		},
 		.Exit => {
-			root.log.printUnsafe( " {} ) => noreturn\n", .{ args[0] } );
+			if ( strace ) {
+				root.log.printUnsafe( " 0x{x} ) => noreturn\n", .{ args[0] } );
+			}
+
 			for ( 0..task.currentTask.fd.items.len ) |fd| {
 				if ( task.currentTask.fd.items[fd] != null ) {
-					_ = handlerWrapper( .Close, .{ fd } ++ .{ undefined } ** 5 );
+					_ = handler( .Close, .{ fd } ++ .{ undefined } ** 5, state, false ) catch {};
 				}
 			}
 
 			task.currentTask.exit( args[0] );
+		},
+		.SetThreadArea => _: {
+			const ud = try extractPtr( std.os.linux.user_desc, args[0] );
+			if ( strace ) {
+				root.log.printUnsafe( " {} \n", .{ ud } );
+			}
+
+			if ( state == null ) {
+				break :_ task.Error.InvalidArgument;
+			}
+
+			if ( ud.flags.seg_32bit == 0 or @as( isize, @bitCast( ud.entry_number ) ) != -1 ) {
+				break :_ task.Error.NotImplemented;
+			}
+
+			ud.entry_number = gdt.Segment.TLS >> 3;
+			gdt.table[ud.entry_number].set(
+				ud.base_addr,
+				@truncate( ud.limit ),
+				.{
+					.present = ud.flags.seg_not_present == 0,
+					.executable = true,
+					.rw = true,
+					.ring = if ( task.currentTask.kernelMode ) 0 else 3
+				},
+				.{}
+			);
+
+			task.currentTask.tls = gdt.table[ud.entry_number];
+			state.?.gs = gdt.Segment.TLS;
+			break :_ 0;
 		},
 		else => -1
 	};

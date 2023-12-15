@@ -1,78 +1,63 @@
 const std = @import( "std" );
+const elf = @import( "../elf.zig" );
 const system = @import( "./system.zig" );
+const FileStream = @import( "./file.zig" ).FileStream;
 
 fn osWrite( fd: i32, buf: []const u8 ) error{}!usize {
 	return std.os.system.write( fd, buf.ptr, buf.len );
 }
 
-fn openDwarfInfo() !std.dwarf.DwarfInfo {
-	const alloc = std.heap.page_allocator;
-
-	const ELF_BUFSIZE = 512 * 1024;
-	const fd: i32 = @bitCast( system.open( std.os.argv[0], std.os.linux.O.RDONLY, 0 ) );
-	var elf = try alloc.alloc( u8, ELF_BUFSIZE );
-
-	var s: usize = system.read( fd, elf.ptr, elf.len );
-	while ( s == ELF_BUFSIZE ) : ( s = std.os.linux.read( fd, elf.ptr[( elf.len - ELF_BUFSIZE )..], ELF_BUFSIZE ) ) {
-		if ( alloc.resize( elf, elf.len + ELF_BUFSIZE ) ) {
-			elf.len += ELF_BUFSIZE;
-		} else {
-			elf = try alloc.realloc( elf, elf.len + ELF_BUFSIZE );
+pub fn openDwarfInfo( path: [*:0]const u8, alloc: std.mem.Allocator ) !elf.DwarfInfo {
+	var info = _: {
+		const fd: i32 = @bitCast( system.open( path, std.os.linux.O.RDONLY, 0 ) );
+		if ( fd < 0 ) {
+			return @import( "../task.zig" ).Error.MissingFile;
 		}
-	}
 
-	elf.len -= ELF_BUFSIZE - s;
-	_ = system.close( fd );
+		defer _ = system.close( fd );
 
-	var stream = std.io.fixedBufferStream( elf );
-	var header = try std.elf.Header.read( &stream );
-	var sections: std.dwarf.DwarfInfo.SectionArray = std.dwarf.DwarfInfo.null_section_array;
+		var stream = FileStream { .fd = fd };
 
-	const sectionNames: *std.elf.Elf32_Shdr = @alignCast( @ptrCast( elf[@truncate( header.shoff + header.shentsize * header.shstrndx )..] ) );
-	var iter = header.section_header_iterator( stream );
-	while ( iter.next() catch null ) |sh| {
-		const name = std.mem.sliceTo( elf[( sectionNames.sh_offset + sh.sh_name )..], 0 );
-
-		if (
-			std.ComptimeStringMap( std.dwarf.DwarfSection, .{
-				.{ ".debug_abbrev", .debug_abbrev },
-				.{ ".debug_frame" , .debug_frame  },
-				.{ ".debug_info"  , .debug_info   },
-				.{ ".debug_line"  , .debug_line   },
-				.{ ".debug_ranges", .debug_ranges },
-				.{ ".debug_str"   , .debug_str    },
-			} ).get( name )
-		) |section| {
-			sections[@intFromEnum( section )] = std.dwarf.DwarfInfo.Section {
-				.data = elf[@truncate( sh.sh_offset )..@truncate( sh.sh_offset + sh.sh_size )],
-				.owned = true,
-				.virtual_address = @truncate( sh.sh_offset )
-			};
-		}
-	}
-
-	var info = std.dwarf.DwarfInfo {
-		.endian = @import( "builtin" ).cpu.arch.endian(),
-		.is_macho = false,
-		.sections = sections
+		const curElf = try elf.read( stream.reader(), stream.seekableStream() );
+		break :_ try curElf.readDwarfInfo( alloc );
 	};
 
-	try std.dwarf.openDwarfDebugInfo( &info, alloc );
+	try std.dwarf.openDwarfDebugInfo( &info.info, alloc );
 	return info;
 }
 
 pub fn printStack( writer: anytype ) anyerror!void {
 	var si = std.debug.StackIterator.init( @returnAddress(), null );
-	var info: ?std.dwarf.DwarfInfo = openDwarfInfo() catch |err| _: {
-		std.fmt.format( writer, "! Unable to retrieve symbol information: {}\n", .{ err } ) catch {};
-		break :_ null;
-	};
+
+	var arena = std.heap.ArenaAllocator.init( std.heap.page_allocator );
+	const alloc = arena.allocator();
+	defer arena.deinit();
+
+	var info: ?elf.DwarfInfo = if ( std.os.argv.len >= 1 ) (
+		openDwarfInfo( std.os.argv[0], alloc ) catch |err| _: {
+			std.fmt.format( writer, "! Unable to retrieve symbol information: {}\n", .{ err } ) catch {};
+			break :_ null;
+		}
+	) else (
+		null
+	);
 
 	while ( si.next() ) |ra| {
-		try std.fmt.format( writer, "[0x{x:0>8}] {s}\n", .{
-			@as( u32, @truncate( ra ) ),
-			if ( info ) |*i| ( i.getSymbolName( ra - 1 ) orelse "<unknown>" ) else ( "<unknown>" ),
-		} );
+		if ( ra == 0 ) {
+			break;
+		}
+
+		try std.fmt.format( writer, "[0x{x:0>8}] ", .{ @as( u32, @truncate( ra ) ) } );
+		if ( ra > @import( "../mem.zig" ).ADDR_KMAIN_OFFSET ) {
+			_ = try writer.write( "<kernel:unknown>\n" );
+			continue;
+		} else if ( info ) |*i| {
+			if ( i.printSymbol( writer, alloc, ra ) catch false ) {
+				continue;
+			}
+		}
+
+		_ = try writer.write( "<unknown>\n" );
 	}
 }
 

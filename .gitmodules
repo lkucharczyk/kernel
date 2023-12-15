@@ -1,0 +1,6 @@
+[submodule "vendor/sbase"]
+	path = vendor/sbase
+	url = git://git.suckless.org/sbase
+[submodule "vendor/musl"]
+	path = vendor/musl
+	url = git://git.musl-libc.org/musl

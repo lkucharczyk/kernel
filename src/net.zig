@@ -84,14 +84,12 @@ pub fn init() std.mem.Allocator.Error!void {
 	netTask = task.create( daemon, true );
 }
 
-fn daemon( _: usize, _: [*]const [*:0]const u8 ) callconv(.C) void {
+fn daemon( _: [*]usize ) callconv(.C) void {
 	for ( interfaces.items ) |*interface| {
 		createSubtask( &interface.fsNode, .{ .read = true }, recv ) catch unreachable;
 	}
 
-	while ( ksyscall( .Poll, .{ @intFromPtr( pollfd.items.ptr ), pollfd.items.len, @bitCast( @as( i32, -1 ) ), undefined, undefined, undefined } ) > 0 ) {
-		task.currentTask.park( .{ .poll = .{ .fd = pollfd.items } } );
-
+	while ( ksyscall( .Poll, .{ @intFromPtr( pollfd.items.ptr ), pollfd.items.len, @bitCast( @as( i32, -1 ) ), undefined, undefined, undefined }, null ) > 0 ) {
 		for ( pollfd.items, 0.. ) |*pfd, i| {
 			if ( pfd.retEvents.any() ) {
 				subtasks.items[i]( pfd );

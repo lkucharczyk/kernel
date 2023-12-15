@@ -45,7 +45,10 @@ pub fn init() void {
 	vga.setControlReg( vga.ControlRegister.CursorStart, @intFromEnum( Cursor.Thin ) );
 	clear();
 
-	fsNode.init( 1, "tty0", .CharDevice, undefined, .{ .write = &writeFs }  );
+	fsNode.init( 1, "tty0", .CharDevice, undefined, .{
+		.write = &writeFs,
+		.ioctl = &ioctl
+	} );
 	vfs.devNode.link( &fsNode ) catch unreachable;
 }
 
@@ -194,4 +197,17 @@ pub fn stream() Stream {
 			.write = write
 		}
 	};
+}
+
+fn ioctl( _: *vfs.Node, _: *vfs.FileDescriptor, cmd: u32, arg: usize ) @import( "./task.zig" ).Error!i32 {
+	if ( cmd == std.os.linux.T.IOCGWINSZ ) {
+		const ws: *std.os.linux.winsize = @ptrFromInt( arg );
+		ws.ws_row = rows;
+		ws.ws_col = cols;
+		ws.ws_xpixel = 0;
+		ws.ws_ypixel = 0;
+		return 0;
+	}
+
+	return error.BadFileDescriptor;
 }

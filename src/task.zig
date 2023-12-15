@@ -1,16 +1,21 @@
 const std = @import( "std" );
 const root = @import( "root" );
+const elf = @import( "./elf.zig" );
 const gdt = @import( "./gdt.zig" );
 const irq = @import( "./irq.zig" );
 const mem = @import( "./mem.zig" );
 const vfs = @import( "./vfs.zig" );
 const x86 = @import( "./x86.zig" );
+const AnySeekableStream = @import( "./util/stream.zig" ).AnySeekableStream;
+
+pub const Errno = @import( "./task/errno.zig" ).Errno;
+pub const Error = @import( "./task/errno.zig" ).Error;
+pub const MMap = @import( "./task/mmap.zig" ).MMap;
 
 pub var kernelTask: *Task = undefined;
 pub var currentTask: *Task = undefined;
 
 const KS = 64 * 1024;
-const US = 64 * 1024;
 
 const FdWait = struct {
 	ptr: *vfs.FileDescriptor,
@@ -29,7 +34,9 @@ pub const PollFd = extern struct {
 		priority: bool = false,
 		write: bool = false,
 		err: bool = false,
-		_: u12 = 0,
+		hangup: bool = false,
+		noVal: bool = false,
+		_: u10 = 0,
 
 		pub fn any( self: Events ) bool {
 			return @as( u16, @bitCast( self ) ) > 0;
@@ -44,13 +51,15 @@ pub const PollFd = extern struct {
 		var out: bool = false;
 		self.retEvents = .{};
 
-		if ( task.getFd( self.fd ) catch null ) |fd| {
+		if ( task.getFd( self.fd ) ) |fd| {
 			inline for ( .{ "read", "write" } ) |f| {
 				if ( @field( fd.status, f ) and @field( self.reqEvents, f ) ) {
 					@field( self.retEvents, f ) = true;
 					out = true;
 				}
 			}
+		} else |_| {
+			self.retEvents.noVal = true;
 		}
 
 		return out;
@@ -76,6 +85,7 @@ pub const PollWait = struct {
 const StatusWait = union(enum) {
 	fd: FdWait,
 	poll: PollWait,
+	task: *Task,
 	Manual,
 
 	pub fn ready( self: *StatusWait, task: *Task ) bool {
@@ -90,6 +100,7 @@ const StatusWait = union(enum) {
 		try switch ( self ) {
 			.fd => |fd| std.fmt.format( writer, "fd:{s}", .{ fd.ptr.node.name } ),
 			.poll => std.fmt.format( writer, "poll", .{} ),
+			.task => |t| std.fmt.format( writer, "task:{s}", .{ t.id } ),
 			.Manual => std.fmt.format( writer, "manual", .{} )
 		};
 	}
@@ -103,171 +114,121 @@ const Status = union(enum) {
 	Done
 };
 
-pub const Error = error {
-	BadFileDescriptor,
-	OutOfMemory,
-	PermissionDenied,
-	InvalidPointer,
-	InvalidArgument,
-	NotSocket,
-	ProtocolNotSupported,
-	AddressFamilyNotSupported,
-	AddressInUse,
-	NoRouteToHost
-};
-
-pub const Errno = enum(i16) {
-	Success                   = 0,
-	/// EBADF
-	BadFileDescriptor         = 9,
-	/// ENOMEM
-	OutOfMemory               = 12,
-	/// EACCES
-	PermissionDenied          = 13,
-	/// EFAULT
-	InvalidPointer            = 14,
-	/// EINVAL
-	InvalidArgument           = 22,
-	/// ENOTSOCK
-	NotSocket                 = 88,
-	/// EPROTONOSUPPORT
-	ProtocolNotSupported      = 93,
-	/// EAFNOSUPPORT
-	AddressFamilyNotSupported = 97,
-	/// EADDRINUSE
-	AddressInUse              = 98,
-	/// EHOSTUNREACH
-	NoRouteToHost             = 113,
-
-	pub fn fromError( self: Error ) Errno {
-		return switch ( self ) {
-			Error.BadFileDescriptor         => .BadFileDescriptor,
-			Error.OutOfMemory               => .OutOfMemory,
-			Error.PermissionDenied          => .PermissionDenied,
-			Error.InvalidPointer            => .InvalidPointer,
-			Error.InvalidArgument           => .InvalidArgument,
-			Error.NotSocket                 => .NotSocket,
-			Error.ProtocolNotSupported      => .ProtocolNotSupported,
-			Error.AddressFamilyNotSupported => .AddressFamilyNotSupported,
-			Error.AddressInUse              => .AddressInUse,
-			Error.NoRouteToHost             => .NoRouteToHost
-		};
-	}
-
-	pub fn getResult( self: Errno ) isize {
-		return -@intFromEnum( self );
-	}
-};
-
 pub const Task = struct {
 	id: u8,
+	bin: ?[:0]const u8 = null,
 	status: Status,
 	kernelMode: bool,
-	entrypoint: *const fn( argc: usize, argv: [*]const [*:0]const u8 ) callconv(.C) void,
+	entrypoint: *const fn( argc: [*]usize ) callconv(.C) void,
 	stackPtr: x86.StackPtr = undefined,
-	kstack: []align(4096) u8 = undefined,
-	ustack: []align(4096) u8 = undefined,
-	args: []const [*:0]const u8 = undefined,
-	memBreak: usize = 0,
-	memPages: std.ArrayListUnmanaged( u10 ) = undefined,
+	kstack: []align(4096) usize = undefined,
+	programBreak: usize = 0,
+	stackBreak: usize = mem.ADDR_KMAIN_OFFSET - 4 * @sizeOf( usize ),
+	mmap: MMap = undefined,
 	fd: std.ArrayListUnmanaged( ?*vfs.FileDescriptor ) = undefined,
-	errno: Errno = .Success,
+	tls: ?gdt.Entry = null,
 
-	fn init( self: *Task ) std.mem.Allocator.Error!void {
-		self.kstack = try root.kheap.alignedAlloc( u8, 4096, KS );
+	fn init( self: *Task, parent: *const Task, state: ?*const x86.State ) std.mem.Allocator.Error!void {
+		self.kstack = try root.kheap.alignedAlloc( usize, 4096, KS / @sizeOf( usize ) );
 		errdefer root.kheap.free( self.kstack );
-		self.ustack = try root.kheap.alignedAlloc( u8, 4096, US );
-		errdefer root.kheap.free( self.ustack );
-		@memset( self.ustack, 0 );
 
-		self.memPages = try std.ArrayListUnmanaged( u10 ).initCapacity( root.kheap, 1 );
-		errdefer {
-			for ( self.memPages.items ) |i| {
-				mem.freePhysical( i );
-			}
+		self.programBreak = parent.programBreak;
+		self.stackBreak = parent.stackBreak;
+		self.mmap = try parent.mmap.dupe( root.kheap );
+		errdefer self.mmap.deinit();
 
-			self.memPages.deinit( root.kheap );
-		}
+		_ = try self.mmap.alloc( mem.ADDR_KMAIN_OFFSET - mem.PAGE_SIZE, mem.PAGE_SIZE );
 
-		if ( !self.kernelMode ) {
-			self.memPages.appendAssumeCapacity( try mem.allocPhysical() );
-		}
-
-		self.args.ptr = undefined;
-		self.args.len = 0;
-
-		self.fd = try std.ArrayListUnmanaged( ?*vfs.FileDescriptor ).initCapacity( root.kheap, 3 );
+		self.fd = try std.ArrayListUnmanaged( ?*vfs.FileDescriptor ).initCapacity( root.kheap, @max( 3, parent.fd.items.len ) );
 		errdefer self.fd.deinit( root.kheap );
-		self.fd.appendAssumeCapacity( try kernelTask.fd.items[0].?.node.open() );
-		self.fd.appendAssumeCapacity( try kernelTask.fd.items[1].?.node.open() );
-		self.fd.appendAssumeCapacity( try kernelTask.fd.items[2].?.node.open() );
+		for ( parent.fd.items ) |fd| {
+			if ( fd ) |f| {
+				self.fd.appendAssumeCapacity( try f.node.open() );
+			} else {
+				self.fd.appendAssumeCapacity( null );
+			}
+		}
 
 		self.stackPtr = .{
-			.ebp = @intFromPtr( self.kstack.ptr ) + KS - 4,
-			.esp = @intFromPtr( self.kstack.ptr ) + KS - ( 9 * 4 ),
+			.ebp = @intFromPtr( &self.kstack[self.kstack.len - 1] ),
+			.esp = @intFromPtr( &self.kstack[self.kstack.len - 9] )
 		};
 
-		currentTask = self;
-		kernelTask.stackPtr = x86.StackPtr.get();
-		currentTask.stackPtr.set();
+		var tmpState: x86.State = undefined;
+		if ( state ) |s| {
+			tmpState = s.*;
+		} else {
+			tmpState.eip = @intFromPtr( self.entrypoint );
+			tmpState.uesp = self.stackBreak;
+			tmpState.ebp = self.stackBreak;
+		}
 
-		const cs: u32 = if ( currentTask.kernelMode ) ( gdt.Segment.KERNEL_CODE ) else ( gdt.Segment.USER_CODE | 3 );
-		const ds: u32 = if ( currentTask.kernelMode ) ( gdt.Segment.KERNEL_DATA ) else ( gdt.Segment.USER_DATA | 3 );
+		tmpState.eax = 0;
 
-		asm volatile (
-			\\ pushl %[ds]        // data segment offset
-			\\ pushl %[sp]        // task stack ptr
-			\\ pushf              // eflags
-			\\ popl %%eax
-			\\ orl $0x200, %%eax  // enable interrupts on iret
-			\\ pushl %%eax
-			\\ pushl %[cs]        // code segment offset
-			\\ pushl %[ep]        // entrypoint
-			::
-			[sp] "{ecx}" ( @intFromPtr( currentTask.ustack.ptr ) + US - 4 ),
-			[ep] "{ebx}" ( &run ),
-			[cs] "{edx}" ( cs ),
-			[ds] "{eax}" ( ds )
+		// data segment offset
+		if ( self.kernelMode ) {
+			self.pushToKstack( gdt.Segment.KERNEL_DATA );
+		} else {
+			self.pushToKstack( gdt.Segment.USER_DATA | 3 );
+		}
+
+		// user stack pointer
+		self.pushToKstack( tmpState.uesp );
+
+		// eflags; enable interrupts after iret
+		self.pushToKstack(
+			asm volatile (
+				\\ pushf
+				\\ popl %%eax
+				\\ orl $0x200, %%eax
+				: [_] "={eax}" (-> usize)
+			)
 		);
 
-		currentTask.stackPtr = x86.StackPtr.get();
-		kernelTask.stackPtr.set();
-		currentTask = kernelTask;
+		// code segment offset
+		if ( self.kernelMode ) {
+			self.pushToKstack( gdt.Segment.KERNEL_CODE );
+		} else {
+			self.pushToKstack( gdt.Segment.USER_CODE | 3 );
+		}
+
+		// entrypoint
+		self.pushToKstack( tmpState.eip );
+
+		// pusha
+		self.pushToKstack( tmpState.eax );
+		self.pushToKstack( tmpState.ecx );
+		self.pushToKstack( tmpState.edx );
+		self.pushToKstack( tmpState.ebx );
+		self.pushToKstack( tmpState.uesp );
+		self.pushToKstack( tmpState.ebp );
+		self.pushToKstack( tmpState.esi );
+		self.pushToKstack( tmpState.edi );
 	}
 
 	fn deinit( self: *Task ) void {
-		for ( self.memPages.items ) |i| {
-			mem.freePhysical( i );
-		}
-
-		self.memPages.deinit( root.kheap );
-
-		root.kheap.free( self.ustack );
+		self.mmap.deinit();
 		root.kheap.free( self.kstack );
+
+		if ( self.bin ) |bin| {
+			root.kheap.free( bin );
+		}
 	}
 
 	pub fn map( self: *Task ) void {
-		// root.log.printUnsafe( "task.map: {any}\n", .{ self.memPages.items } );
-		for ( self.memPages.items, 0.. ) |page, i| {
-			mem.pagingDir.entries[i] = .{
-				.addressLow = page,
-				.flags = .{
-					.user = true,
-					.present = true,
-					.writeable = true,
-					.hugePage = true
-				}
-			};
+		// root.log.printUnsafe( "task.map: {any}\n", .{ self.mmap.entries.items } );
+		self.mmap.map();
 
-			asm volatile ( "invlpg (%[page])" :: [page] "r" ( i ) );
+		if ( self.tls ) |tls| {
+			gdt.table[gdt.Segment.TLS >> 3] = tls;
+		} else {
+			gdt.table[gdt.Segment.TLS >> 3].unset();
 		}
 	}
 
 	pub fn unmap( self: *Task ) void {
-		for ( 0..self.memPages.items.len ) |i| {
-			mem.pagingDir.entries[i].flags.present = false;
-			asm volatile ( "invlpg (%[page])" :: [page] "r" ( i ) );
-		}
+		self.mmap.unmap();
+		gdt.table[gdt.Segment.TLS >> 3].unset();
 	}
 
 	fn enter( self: *Task ) void {
@@ -282,7 +243,10 @@ pub const Task = struct {
 
 		if ( currentTask.status == .Start ) {
 			currentTask.status = .Active;
-			asm volatile ( "iret" );
+			asm volatile (
+				\\ popa
+				\\ iret
+			);
 		}
 
 		asm volatile ( "task_end:" );
@@ -300,6 +264,14 @@ pub const Task = struct {
 		x86.disableInterrupts();
 		self.status = .Done;
 		root.log.printUnsafe( "\nTask {} exited with code {}.\n", .{ self.id, code } );
+
+		for ( 0..tasks.len ) |i| {
+			if ( tasks[i] ) |*t| {
+				if ( t.status == .Wait and t.status.Wait == .task and t.status.Wait.task == self ) {
+					t.status = .Active;
+				}
+			}
+		}
 
 		self.unmap();
 		currentTask = self;
@@ -332,11 +304,112 @@ pub const Task = struct {
 
 		return error.BadFileDescriptor;
 	}
+
+	pub fn fork( self: *Task, state: *const x86.State ) error{ OutOfMemory, ResourceUnavailable }!*Task {
+		for ( 0..tasks.len ) |_| {
+			tcc +%= 1;
+
+			if ( tasks[tcc] == null ) {
+				errdefer tasks[tcc] = null;
+
+				// x86.disableInterrupts();
+				tasks[tcc] = Task {
+					.id = tcc,
+					.status = .Start,
+					.kernelMode = self.kernelMode,
+					.entrypoint = self.entrypoint,
+				};
+				try tasks[tcc].?.init( self, state );
+				// x86.enableInterrupts();
+
+				return &( tasks[tcc].? );
+			}
+		}
+
+		return Error.ResourceUnavailable;
+	}
+
+	pub fn loadElf( self: *Task, reader: std.io.AnyReader, seeker: AnySeekableStream, args: [2][]const [*:0]const u8 ) anyerror!void {
+		var arena = std.heap.ArenaAllocator.init( root.kheap );
+		const alloc = arena.allocator();
+		defer arena.deinit();
+
+		try seeker.seekTo( 0 );
+		const curElf = try elf.read( reader, seeker );
+		self.entrypoint = @ptrFromInt( curElf.header.e_entry );
+
+		const sections = try curElf.readSectionTable( alloc );
+
+		self.programBreak = 0;
+		self.mmap.deinit();
+		self.mmap = MMap.init( root.kheap );
+
+		for ( sections ) |section| {
+			if ( ( section.sh_flags & std.elf.SHF_ALLOC ) > 0 ) {
+				const ptr = @as( [*]u8, @ptrFromInt( section.sh_addr ) )[0..section.sh_size];
+				self.programBreak = std.mem.alignForward( usize, @max( self.programBreak, @intFromPtr( ptr.ptr + ptr.len ) ), 4096 );
+
+				if ( try self.mmap.alloc( @intFromPtr( ptr.ptr ), ptr.len ) ) {
+					self.mmap.map();
+				}
+
+				if ( section.sh_type == std.elf.SHT_NOBITS ) {
+					@memset( ptr, 0 );
+				} else if ( section.sh_type != std.elf.SHT_NULL ) {
+					try seeker.seekTo( section.sh_offset );
+					_ = try reader.readAll( ptr );
+				}
+			}
+		}
+
+		_ = try self.mmap.alloc( mem.ADDR_KMAIN_OFFSET - mem.PAGE_SIZE, mem.PAGE_SIZE );
+		self.mmap.map();
+		const ustack = @as( [*]usize, @ptrFromInt( mem.ADDR_KMAIN_OFFSET - mem.PAGE_SIZE ) )[0..( mem.PAGE_SIZE / @sizeOf( usize ) )];
+		@memset( ustack, 0 );
+
+		// auxv
+		self.pushToUstack( 0 );
+		self.pushToUstack( std.elf.AT_NULL );
+		self.pushToUstack( 4096 );
+		self.pushToUstack( std.elf.AT_PAGESZ );
+
+		// env, argv
+		const dataAddr = std.mem.alignForward( usize, self.programBreak, 4096 );
+		const dataPtr: [*]u8 = @ptrFromInt( dataAddr );
+		var dataOff: usize = 0;
+		inline for ( .{ args[1], args[0] } ) |arg| {
+			self.pushToUstack( 0 );
+			for ( 1..( arg.len + 1 ) ) |i| {
+				self.pushToUstack( dataAddr + dataOff );
+
+				const len = std.mem.len( arg[arg.len - i] ) + 1;
+				@memcpy( dataPtr[dataOff..], arg[arg.len - i][0..len] );
+				dataOff += len;
+			}
+		}
+
+		self.pushToUstack( args[0].len );
+		self.programBreak = std.mem.alignForward( usize, dataAddr + dataOff, 4096 );
+
+		self.mmap.unmap();
+	}
+
+	fn pushToKstack( self: *Task, val: usize ) void {
+		const ptr: *usize = @ptrFromInt( self.stackPtr.esp - @sizeOf( usize ) );
+		ptr.* = val;
+		self.stackPtr.esp = @intFromPtr( ptr );
+	}
+
+	fn pushToUstack( self: *Task, val: usize ) void {
+		const ptr: *usize = @ptrFromInt( self.stackBreak - @sizeOf( usize ) );
+		ptr.* = val;
+		self.stackBreak = @intFromPtr( ptr );
+	}
 };
 
-var tasks: [8]?Task = undefined;
-var tcc: u3 = 0;
-var tcs: u3 = 0;
+var tasks: [16]?Task = undefined;
+var tcc: u4 = 0;
+var tcs: u4 = 0;
 
 pub fn init() std.mem.Allocator.Error!void {
 	tasks[0] = Task {
@@ -344,19 +417,22 @@ pub fn init() std.mem.Allocator.Error!void {
 		.status = .Kernel,
 		.kernelMode = true,
 		.entrypoint = undefined,
-		.fd = try std.ArrayListUnmanaged( ?*vfs.FileDescriptor ).initCapacity( root.kheap, 3 )
+		.fd = try std.ArrayListUnmanaged( ?*vfs.FileDescriptor ).initCapacity( root.kheap, 3 ),
+		.mmap = MMap.init( root.kheap )
 	};
-	kernelTask = &tasks[0].?;
-	kernelTask.fd.appendAssumeCapacity( try vfs.devNode.resolve( "com0" ).?.open() );
-	kernelTask.fd.appendAssumeCapacity( try vfs.devNode.resolve( "com0" ).?.open() );
-	kernelTask.fd.appendAssumeCapacity( try vfs.devNode.resolve( "com0" ).?.open() );
 
-	for ( 1..tasks.len ) |i| {
-		tasks[i] = null;
+	kernelTask = &tasks[0].?;
+	currentTask = kernelTask;
+	@memset( tasks[1..], null );
+
+	if ( vfs.devNode.resolve( "com0" ) ) |com| {
+		kernelTask.fd.appendAssumeCapacity( try com.open() );
+		kernelTask.fd.appendAssumeCapacity( try com.open() );
+		kernelTask.fd.appendAssumeCapacity( try com.open() );
 	}
 }
 
-pub fn create( entrypoint: *const fn( argc: usize, argv: [*]const [*:0]const u8 ) callconv(.C) void, kernelMode: bool ) *Task {
+pub fn create( entrypoint: *const fn( argc: [*]usize ) callconv(.C) void, kernelMode: bool ) *Task {
 	for ( 0..tasks.len ) |_| {
 		tcc +%= 1;
 
@@ -368,7 +444,7 @@ pub fn create( entrypoint: *const fn( argc: usize, argv: [*]const [*:0]const u8 
 				.kernelMode = kernelMode,
 				.entrypoint = entrypoint
 			};
-			tasks[tcc].?.init() catch unreachable;
+			tasks[tcc].?.init( kernelTask, null ) catch unreachable;
 			x86.enableInterrupts();
 
 			return &( tasks[tcc].? );
@@ -378,37 +454,12 @@ pub fn create( entrypoint: *const fn( argc: usize, argv: [*]const [*:0]const u8 
 	@panic( "Can't create a new task" );
 }
 
-pub fn createElf( stream: anytype, args: []const [*:0]const u8 ) !void {
-	const header = try std.elf.Header.read( stream );
-	var task = create( @ptrFromInt( @as( usize, @truncate( header.entry ) ) ), false );
-	task.args = try root.kheap.dupe( [*:0]const u8, args );
-	var sections = header.section_header_iterator( stream );
-
-	x86.disableInterrupts();
-	task.map();
-
-	while ( sections.next() catch |err| return err ) |section| {
-		if ( ( section.sh_flags & std.elf.SHF_ALLOC ) > 0 ) {
-			const ptr = @as( [*]u8, @ptrFromInt( @as( usize, @truncate( section.sh_addr ) ) ) )[0..@truncate( section.sh_size )];
-
-			task.memBreak = std.mem.alignForward( usize, @max( task.memBreak, @intFromPtr( ptr.ptr + ptr.len ) ), 4096 );
-			while ( task.memBreak >= 0x40_0000 * task.memPages.items.len ) {
-				try task.memPages.append( root.kheap, try mem.allocPhysical() );
-				task.map();
-			}
-
-			if ( section.sh_type == std.elf.SHT_NOBITS ) {
-				@memset( ptr, 0 );
-			} else if ( section.sh_type != std.elf.SHT_NULL ) {
-				try stream.seekableStream().seekTo( section.sh_offset );
-				_ = try stream.reader().read( ptr );
-			}
-
-		}
-	}
-
-	task.unmap();
-	x86.enableInterrupts();
+pub fn createElf( reader: std.io.AnyReader, seeker: AnySeekableStream, args: [2][]const [*:0]const u8 ) !*Task {
+	const newTask = create( @ptrFromInt( 0xdeaddead ), false );
+	try newTask.loadElf( reader, seeker, args );
+	newTask.kstack[newTask.kstack.len - 14] = @truncate( @intFromPtr( newTask.entrypoint ) );
+	newTask.kstack[newTask.kstack.len - 11] = newTask.stackBreak;
+	return newTask;
 }
 
 fn countTasks( includeWait: bool ) usize {
@@ -495,12 +546,5 @@ fn scheduler( _: *x86.State ) void {
 			x86.disableInterrupts();
 			irq.unmask( irq.Interrupt.Pit );
 		}
-	}
-}
-
-fn run() noreturn {
-	currentTask.entrypoint( currentTask.args.len, currentTask.args.ptr );
-	while ( true ) {
-		std.os.system.exit( 0 );
 	}
 }

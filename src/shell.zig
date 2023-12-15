@@ -34,15 +34,10 @@ inline fn print( comptime fmt: []const u8, args: anytype ) void {
 	std.fmt.format( stdout, fmt, args ) catch unreachable;
 }
 
-var gpa: std.heap.GeneralPurposeAllocator( .{ .safety = false } ) = undefined;
-var alloc: std.mem.Allocator = undefined;
+var gpa = std.heap.GeneralPurposeAllocator( .{ .safety = false } ) {};
+const alloc: std.mem.Allocator = gpa.allocator();
 
 pub fn main() anyerror!void {
-	gpa = std.heap.GeneralPurposeAllocator( .{ .safety = false } ) {};
-	alloc = gpa.allocator();
-
-	const SYSCALL_ERR: usize = @bitCast( @as( isize, -1 ) );
-
 	if ( std.os.argv.len >= 2 ) {
 		_ = try h( system.close( 0 ) );
 		_ = try h( system.open( std.os.argv[1], std.os.linux.O.RDONLY, 0 ) );
@@ -53,40 +48,50 @@ pub fn main() anyerror!void {
 		_ = try h( system.close( 2 ) );
 		_ = try h( system.open( std.os.argv[2], std.os.linux.O.WRONLY, 0 ) );
 	}
-	write( "> " );
+	print( "argv: [{}]{s}\n> ", .{ std.os.argv.len,  std.os.argv } );
 
-	var buf: [BUFSIZE]u8 = .{ 0 } ** BUFSIZE;
+	var inbuf: [BUFSIZE]u8 = .{ 0 } ** BUFSIZE;
+	var cmdbuf: [BUFSIZE]u8 = .{ 0 } ** BUFSIZE;
 	var p: usize = 0;
-	var s: usize = try stdin.read( &buf );
+	var s: usize = try stdin.read( &inbuf );
 
-	while ( s != SYSCALL_ERR ) : ( s = try stdin.read( buf[p..] ) ) {
-		if ( s > 0 ) {
-			if ( p > 0 and buf[p] == 0x03 ) { // ctrl-c
+	while ( s != 0 ) : ( s = try stdin.read( &inbuf ) ) {
+		for ( inbuf ) |c| {
+			if ( p > 0 and c == 0x03 ) { // ctrl-c
 				write( "\x1b[7m" ++ "^C" ++ "\x1b[0m" ++ "\n" );
 				p = 0;
-			} else if ( buf[p] == 0x08 ) { // \b
+			} else if ( p == 0 and c == 0x04 ) { // ctrl-d
+				write( "\x1b[7m" ++ "^D" ++ "\x1b[0m" ++ "\n" );
+				process( "exit" ) catch {};
+			} else if ( c == 0x08 ) { // \b
 				p -|= 1;
-			} else if ( buf[p] == '\n' ) {
+			} else if ( c == '\n' ) {
+				// clear line + move to start
+				write( "\x1b[2K\x1b[1G> " );
+				if ( p > 0 ) {
+					write( @ptrCast( cmdbuf[0..p] ) );
+				}
 				write( "\n" );
 
 				if ( p > 0 ) {
-					process( std.mem.trim( u8, buf[0..p], " " ) ) catch {};
+					process( std.mem.trim( u8, cmdbuf[0..p], " " ) ) catch {};
 				}
 
 				p = 0;
-			} else if ( std.ascii.isPrint( buf[p] ) ) {
-				p += s;
+			} else if ( std.ascii.isPrint( c ) ) {
+				cmdbuf[p] = c;
+				p += 1;
 			}
 
-			if ( p == buf.len ) {
+			if ( p == cmdbuf.len ) {
 				p -= 1;
 			}
+		}
 
-			// clear line + move to start
-			write( "\x1b[2K\x1b[1G> " );
-			if ( p > 0 ) {
-				write( @ptrCast( buf[0..p] ) );
-			}
+		// clear line + move to start
+		write( "\x1b[2K\x1b[1G> " );
+		if ( p > 0 ) {
+			write( @ptrCast( cmdbuf[0..p] ) );
 		}
 	}
 }
@@ -101,6 +106,37 @@ fn h( retval: usize ) OsError!usize {
 	return retval;
 }
 
+pub const BINARIES_SBASE = [_][:0]const u8{
+	"basename", "cal", "cat", "chgrp", "chmod", "chown", "chroot", "cksum", "cmp", "cols", "comm",
+	"cp", "cron", "cut", "date", "dd", "dirname", "du", "echo", "ed", "env", "expand", "expr",
+	"false", "find", "flock", "fold", "getconf", "grep", "head", "hostname", "join", "kill",
+	"link", "ln", "logger", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp", "mv",
+	"nice", "nl", "nohup", "od", "paste", "pathchk", "printenv", "printf", "pwd", "readlink",
+	"renice", "rev", "rm", "rmdir", "sed", "seq", "setsid", "sha1sum", "sha224sum", "sha256sum",
+	"sha384sum", "sha512-224sum", "sha512-256sum", "sha512sum", "sleep", "sort", "split", "sponge",
+	"strings", "sync", "tail", "tar", "tee", "test", "tftp", "time", "touch", "tr", "true",
+	"tsort", "tty", "uname", "unexpand", "uniq", "unlink", "uudecode", "uuencode", "wc", "which",
+	"whoami", "xargs", "xinstall", "yes"
+};
+
+const BINARIES = [_][:0]const u8{ "/bin/sbase-box", "/bin/shell" };
+
+fn extractBin( name: []const u8 ) ?[:0]const u8 {
+	for ( &BINARIES ) |bin| {
+		if ( std.mem.eql( u8, name, bin[5..] ) ) {
+			return bin;
+		}
+	}
+
+	for ( &BINARIES_SBASE ) |bin| {
+		if ( std.mem.eql( u8, name, bin ) ) {
+			return "/bin/sbase-box";
+		}
+	}
+
+	return null;
+}
+
 fn process( cmd: []const u8 ) OsError!void {
 	var iter = std.mem.tokenizeScalar( u8, cmd, ' ' );
 
@@ -112,6 +148,9 @@ fn process( cmd: []const u8 ) OsError!void {
 			asm volatile ( "int $0x03" );
 		} else if ( std.mem.eql( u8, cmd0, "panic" ) ) {
 			@panic( "Manual panic" );
+		} else if ( std.mem.eql( u8, cmd0, "fork" ) ) {
+			const res = try h( system.vfork() );
+			print( "fork:{} {}\n", .{ res, system.getpid() } );
 		} else if ( std.mem.eql( u8, cmd0, "help" ) ) {
 			const cmd1 = iter.next() orelse "";
 			if ( std.mem.eql( u8, cmd1, "recvudp" ) ) {
@@ -222,6 +261,29 @@ fn process( cmd: []const u8 ) OsError!void {
 			} else {
 				print( "{}\n", .{ route } );
 			}
+		} else if ( extractBin( cmd0 ) ) |bin| {
+			var arena = std.heap.ArenaAllocator.init( alloc );
+			const aalloc = arena.allocator();
+			defer arena.deinit();
+
+			const argv0 = try aalloc.allocSentinel( u8, 5 + cmd0.len, 0 );
+			@memcpy( argv0[0..5], "/bin/" );
+			@memcpy( argv0[5..], cmd0 );
+
+			const argv = try aalloc.allocSentinel( ?[*:0]u8, std.mem.count( u8, iter.rest(), " " ) + 2, null );
+			@memset( argv, null );
+			argv[0] = argv0.ptr;
+
+			var i: usize = 1;
+			while ( iter.next() ) |arg| : ( i += 1 ) {
+				argv[i] = ( try aalloc.dupeZ( u8, arg ) ).ptr;
+			}
+
+			if ( try h( system.vfork() ) == 0 ) {
+				_ = try h( system.execve( bin, argv.ptr, undefined ) );
+			}
+		} else {
+			print( "! Unknown command: \"{s}\"\n", .{ cmd0 } );
 		}
 	}
 }

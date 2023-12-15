@@ -1,5 +1,4 @@
 const std = @import( "std" );
-const arch = @import( "./x86.zig" );
 const com = @import( "./com.zig" );
 const kbd = @import( "./kbd.zig" );
 const mem = @import( "./mem.zig" );
@@ -16,9 +15,13 @@ var logStreams: [2]?Stream = .{ null, null };
 pub var log = MultiWriter { .streams = &logStreams };
 pub const panic = @import( "./panic.zig" ).panic;
 
+pub const arch = @import( "./x86.zig" );
 pub const os = struct {
 	pub const heap = struct {
-		pub const page_allocator = mem.kheapFba.allocator();
+		pub const page_allocator = std.mem.Allocator {
+			.ptr = &mem.kheapSbrk,
+			.vtable = &@TypeOf( mem.kheapSbrk ).vtable
+		};
 	};
 
 	pub const system = @import( "./api/system.zig" );
@@ -92,8 +95,8 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 		\\ kmain_pm:
 	);
 
-	mem._pagingDir.entries[0].flags.present = false;
-	asm volatile ( "invlpg (0)" );
+	mem.pagingDir.unmap( 0 );
+	mem.init();
 
 	ktry( vfs.init() );
 
@@ -108,17 +111,14 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	@import( "./idt.zig" ).init();
 	@import( "./isr.zig" ).init();
 	@import( "./irq.zig" ).init();
-	arch.enableInterrupts();
-
-	mem.init();
 
 	var shell: ?[]const u8 = null;
 	if ( mbMagic == multiboot.Info.MAGIC ) {
 		log.printUnsafe( "multiboot: {x:0>8}\n{?}\nbootloader: {}\ncmdline: {?}\n", .{
 			mbMagic, mbInfo,
 			fmtUtil.OptionalCStr { .data = mbInfo.?.getBootloaderName() },
-			fmtUtil.OptionalCStr { .data = mbInfo.?.getCmdline() } }
-		);
+			fmtUtil.OptionalCStr { .data = mbInfo.?.getCmdline() }
+		} );
 
 		if ( mbInfo.?.getMemoryMap() ) |mmap| {
 			log.printUnsafe( "mmap:\n", .{} );
@@ -141,11 +141,17 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 				) );
 
 				if ( module.getCmdline() ) |cmdline| {
-					if ( std.mem.endsWith( u8, std.mem.sliceTo( cmdline, 0 ), "shell.elf" ) ) {
-						shell = module.getData();
-						ktry( binNode.link(
-							ktry( vfs.rootVfs.createRoFile( "shell", module.getData() ) )
-						) );
+					inline for ( .{
+						.{ "kernel.dbg", vfs.rootNode, "kernel.dbg" },
+						.{ "shell.elf", binNode, "shell" },
+						.{ "sbase-box", binNode, "sbase-box" }
+					} ) |data| {
+						if ( std.mem.endsWith( u8, std.mem.sliceTo( cmdline, 0 ), data[0] ) ) {
+							shell = module.getData();
+							ktry( data[1].link(
+								ktry( vfs.rootVfs.createRoFile( data[2], module.getData() ) )
+							) );
+						}
 					}
 				}
 			}
@@ -158,11 +164,19 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 
 	if ( @import( "./acpi/rsdp.zig" ).init() ) |rsdp| {
 		if ( rsdp.validate() ) {
+			log.printUnsafe( "rsdp: {[0]*} {[0]}\n", .{ rsdp } );
+
+			const acpiOffset: u10 = @truncate( rsdp.rsdtAddr >> 22 );
+			mem.pagingDir.map( ( mem.ADDR_KMAIN_OFFSET >> 22 ) + acpiOffset, acpiOffset, mem.PagingDir.Flags.KERNEL_HUGE_RO );
+
+			// mem.physicalPages.set( acpiOffset );
+			mem.physicalPages.setRangeValue( .{ .start = acpiOffset, .end = 1024 }, true );
+
 			const rsdt = rsdp.getRsdt();
 			if ( rsdt.validate() ) {
 				log.printUnsafe(
-					"rsdp: {[0]*} {[0]}\nrsdt: {[1]*} {[2]}\n",
-					.{ rsdp, rsdt, std.fmt.Formatter( @import( "./acpi/rsdt.zig" ).Rsdt.format ) { .data = rsdt } }
+					"rsdt: {[0]*} {[1]}\n",
+					.{ rsdt, std.fmt.Formatter( @import( "./acpi/rsdt.zig" ).Rsdt.format ) { .data = rsdt } }
 				);
 
 				if ( rsdt.getTable( @import( "./acpi/fadt.zig" ).Fadt ) ) |fadt| {
@@ -187,6 +201,7 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 
 	syscall.init();
 	ktry( task.init() );
+	@import( "./panic.zig" ).earlyPanic = false;
 
 	ktry( @import( "./net.zig" ).init() );
 	ktry( @import( "./drivers/rtl8139.zig" ).init() );
@@ -195,19 +210,25 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	@import( "./vfs.zig" ).printTree( @import( "./vfs.zig" ).rootNode, 0 );
 	log.printUnsafe( "\n", .{} );
 
-	if ( shell ) |buf| {
-		var elf = std.io.fixedBufferStream( buf );
+	if ( vfs.rootNode.resolveDeep( "bin/shell" ) ) |node| {
+		var elf: *vfs.FileDescriptor = ktry( node.open() );
+		defer elf.close();
 
 		inline for ( 0..com.ports.len ) |i| {
 			if ( com.ports[i] ) |_| {
 				const path = std.fmt.comptimePrint( "/dev/com{}", .{ i } );
-				_ = ktry( task.createElf( &elf, &.{ "/bin/shell", path, path } ) );
+				const st = ktry( task.createElf( elf.reader(), elf.seekableStream(), .{ &.{ "/bin/shell", path, path }, &.{} } ) );
+				st.bin = ktry( kheap.dupeZ( u8, "/bin/shell" ) );
 			}
 		}
 
-		_ = ktry( task.createElf( &elf, &.{ "/bin/shell", "/dev/kbd0", "/dev/tty0" } ) );
+		{
+			const st = ktry( task.createElf( elf.reader(), elf.seekableStream(), .{ &.{ "/bin/shell", "/dev/kbd0", "/dev/tty0" }, &.{} } ) );
+			st.bin = ktry( kheap.dupeZ( u8, "/bin/shell" ) );
+		}
 	}
 
+	arch.enableInterrupts();
 	task.schedule();
 
 	// arch.halt();

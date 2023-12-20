@@ -10,7 +10,7 @@ const FileContext = struct {
 const DirContext = struct {
 	fs: *RootVfs,
 	parent: ?*vfs.Node = null,
-	subnodes: std.ArrayListUnmanaged( *vfs.Node ) = std.ArrayListUnmanaged( *vfs.Node ) {},
+	subnodes: std.ArrayListUnmanaged( vfs.Link ) = std.ArrayListUnmanaged( vfs.Link ) {},
 	mount: ?*vfs.Node = null
 };
 
@@ -21,6 +21,7 @@ pub const RootVfs = struct {
 
 	const dirVTable = vfs.VTable {
 		.link = &linkAt,
+		.unlink = &unlinkAt,
 		.mkdir = &createDirAt,
 		.readdir = &readDir,
 	};
@@ -37,39 +38,39 @@ pub const RootVfs = struct {
 		self.filePool = try std.heap.MemoryPoolExtra( FileContext, .{} ).initPreheated( allocator, 4 );
 		self.dirPool = try std.heap.MemoryPoolExtra( DirContext, .{} ).initPreheated( allocator, 4 );
 
-		self.root = try self.createDir( null, "[RootVFS]" );
+		self.root = try self.createDir( null );
 		return self.root;
 	}
 
-	fn createDir( self: *RootVfs, parent: ?*vfs.Node, name: [*:0]const u8 ) std.mem.Allocator.Error!*vfs.Node {
+	fn createDir( self: *RootVfs, parent: ?*vfs.Node ) std.mem.Allocator.Error!*vfs.Node {
 		var node = try self.nodePool.create();
 		const ctx = try self.dirPool.create();
 
 		ctx.* = .{
 			.fs = self,
 			.parent = parent,
-			.subnodes = try std.ArrayListUnmanaged( *vfs.Node ).initCapacity( self.allocator, 4 )
+			.subnodes = try std.ArrayListUnmanaged( vfs.Link ).initCapacity( self.allocator, 4 )
 		};
 
-		node.init( 1, name, .Directory, ctx, RootVfs.dirVTable );
+		node.init( 1, .Directory, ctx, RootVfs.dirVTable );
 
 		return node;
 	}
 
-	pub fn createDirAt( node: *vfs.Node, name: [*:0]const u8 ) std.mem.Allocator.Error!*vfs.Node {
+	pub fn createDirAt( node: *vfs.Node, name: []const u8 ) std.mem.Allocator.Error!*vfs.Node {
 		var ctx: *DirContext = @alignCast( @ptrCast( node.ctx ) );
 
 		if ( ctx.mount ) |mnt| {
 			return mnt.mkdir( name );
 		}
 
-		const newNode = try ctx.fs.createDir( node, name );
-		try ctx.subnodes.append( ctx.fs.allocator, newNode );
+		const newNode = try ctx.fs.createDir( node );
+		try linkAt( node, newNode, name );
 
 		return newNode;
 	}
 
-	pub fn createRoFile( self: *RootVfs, name: [*:0]const u8, data: []const u8 ) std.mem.Allocator.Error!*vfs.Node {
+	pub fn createRoFile( self: *RootVfs, data: []const u8 ) std.mem.Allocator.Error!*vfs.Node {
 		var node = try self.nodePool.create();
 		const ctx = try self.filePool.create();
 
@@ -78,7 +79,7 @@ pub const RootVfs = struct {
 			.data = data
 		};
 
-		node.init( 1, name, .File, ctx, RootVfs.fileVTable );
+		node.init( 1, .File, ctx, RootVfs.fileVTable );
 		return node;
 	}
 
@@ -95,12 +96,28 @@ pub const RootVfs = struct {
 		return len;
 	}
 
-	pub fn linkAt( node: *vfs.Node, target: *vfs.Node ) std.mem.Allocator.Error!void {
+	pub fn linkAt( node: *vfs.Node, target: *vfs.Node, name: []const u8 ) std.mem.Allocator.Error!void {
 		const ctx: *DirContext = @alignCast( @ptrCast( node.ctx ) );
-		( try ctx.subnodes.addOne( ctx.fs.allocator ) ).* = target;
+		( try ctx.subnodes.addOne( ctx.fs.allocator ) ).* = .{
+			.name = try ctx.fs.allocator.dupeZ( u8, name ),
+			.node = target
+		};
 	}
 
-	pub fn readDir( node: *vfs.Node ) []*vfs.Node {
+	pub fn unlinkAt( node: *vfs.Node, target: *const vfs.Link ) error{ MissingFile }!void {
+		const ctx: *DirContext = @alignCast( @ptrCast( node.ctx ) );
+		for ( ctx.subnodes.items, 0.. ) |*l, i| {
+			if ( target == l ) {
+				ctx.fs.allocator.free( l.name );
+				_ = ctx.subnodes.swapRemove( i );
+				return;
+			}
+		}
+
+		return error.MissingFile;
+	}
+
+	pub fn readDir( node: *vfs.Node ) []const vfs.Link {
 		const ctx: *DirContext = @alignCast( @ptrCast( node.ctx ) );
 		return if ( ctx.mount ) |mnt| ( mnt.readdir() ) else ( ctx.subnodes.items );
 	}

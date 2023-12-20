@@ -86,6 +86,6 @@ pub const Rsdt = opaque {
 			try std.fmt.format( writer, "{s}@{x:0>8}", .{ theader.magic, @intFromPtr( theader ) } );
 		}
 
-		_ = try writer.write( " ] }}" );
+		_ = try writer.write( " ] }" );
 	}
 };

@@ -14,22 +14,29 @@ pub const VTable = struct {
 	write:   ?*const fn( node: *Node, fd: *FileDescriptor, buf: []const u8 ) u32 = null,
 
 	// NodeType.Directory
-	link:    ?*const fn( node: *Node, target: *Node ) std.mem.Allocator.Error!void = null,
-	mkdir:   ?*const fn( node: *Node, name: [*:0]const u8 ) std.mem.Allocator.Error!*Node = null,
-	readdir: ?*const fn( node: *Node ) []*Node = null
+	link:    ?*const fn( node: *Node, target: *Node, name: []const u8 ) std.mem.Allocator.Error!void = null,
+	unlink:  ?*const fn( node: *Node, target: *const Link ) error{ MissingFile }!void = null,
+	mkdir:   ?*const fn( node: *Node, name: []const u8 ) std.mem.Allocator.Error!*Node = null,
+	readdir: ?*const fn( node: *Node ) []const Link = null
+};
+
+pub const Link = struct {
+	name: [:0]const u8,
+	node: *Node
 };
 
 pub const NodeType = enum(u8) {
-	Unknown    = 0,
-	CharDevice = 2,
-	Directory  = 4,
-	File       = 8,
-	Socket     = 12
+	Unknown     = 0o00,
+	CharDevice  = 0o02,
+	Directory   = 0o04,
+	BlockDevice = 0o06,
+	File        = 0o10,
+	Symlink     = 0o12,
+	Socket      = 0o14
 };
 
 pub const Node = struct {
 	inode: u32,
-	name: [64:0]u8,
 	ntype: NodeType = .Unknown,
 	ctx: *anyopaque = undefined,
 	vtable: VTable,
@@ -39,7 +46,6 @@ pub const Node = struct {
 	pub inline fn init(
 		self: *Node,
 		inode: u32,
-		name: [*:0]const u8,
 		ntype: NodeType,
 		ctx: *anyopaque,
 		vtable: VTable
@@ -50,9 +56,6 @@ pub const Node = struct {
 		self.vtable = vtable;
 		self.mountpoint = null;
 		self.descriptors = .{};
-
-		std.debug.assert( std.mem.len( name ) < 64 );
-		@memcpy( &self.name, name );
 	}
 
 	pub fn open( self: *Node ) error{ OutOfMemory }!*FileDescriptor {
@@ -92,32 +95,23 @@ pub const Node = struct {
 		}
 	}
 
-	pub fn read( self: *Node, fd: *FileDescriptor, buf: []u8 ) u32 {
-		if ( self.vtable.read ) |f| {
-			return f( self, fd, buf );
-		}
-
-		return @bitCast( @as( i32, -1 ) );
-	}
-
-	pub fn write( self: *Node, fd: *FileDescriptor, buf: []const u8 ) u32 {
-		if ( self.vtable.write ) |f| {
-			return f( self, fd, buf );
-		}
-
-		return @bitCast( @as( i32, -1 ) );
-	}
-
-	pub fn link( self: *Node, target: *Node ) std.mem.Allocator.Error!void {
+	pub fn link( self: *Node, target: *Node, name: []const u8 ) error{ PermissionDenied, NotDirectory, OutOfMemory }!void {
 		if ( self.mountpoint ) |mnt| {
-			return mnt.link( target );
+			return mnt.link( target, name );
 		}
 
-		std.debug.assert( self.ntype == .Directory );
-		return self.vtable.link.?( self, target );
+		if ( self.vtable.link ) |f| {
+			return f( self, target, name );
+		}
+
+		if ( self.ntype != .Directory ) {
+			return task.Error.NotDirectory;
+		}
+
+		return task.Error.PermissionDenied;
 	}
 
-	pub fn mkdir( self: *Node, name: [*:0]const u8 ) std.mem.Allocator.Error!*Node {
+	pub fn mkdir( self: *Node, name: []const u8 ) std.mem.Allocator.Error!*Node {
 		if ( self.mountpoint ) |mnt| {
 			return mnt.mkdir( name );
 		}
@@ -126,7 +120,7 @@ pub const Node = struct {
 		return self.vtable.mkdir.?( self, name );
 	}
 
-	pub fn readdir( self: *Node ) []*Node {
+	pub fn readdir( self: *Node ) []const Link {
 		if ( self.mountpoint ) |mnt| {
 			return mnt.readdir();
 		}
@@ -152,9 +146,9 @@ pub const Node = struct {
 	pub fn resolve( self: *Node, name: []const u8 ) ?*Node {
 		std.debug.assert( self.ntype == .Directory );
 
-		for ( self.readdir() ) |node| {
-			if ( std.mem.eql( u8, name, node.name[0..std.mem.indexOfSentinel( u8, 0, &node.name )] ) ) {
-				return node;
+		for ( self.readdir() ) |e| {
+			if ( std.mem.eql( u8, name, e.name ) ) {
+				return e.node;
 			}
 		}
 
@@ -222,12 +216,28 @@ pub const FileDescriptor = struct {
 		self.node.close( self );
 	}
 
-	pub fn read( self: *FileDescriptor, buf: []u8 ) error{}!u32 {
-		return self.node.read( self, buf );
+	pub fn read( self: *FileDescriptor, buf: []u8 ) error{ BadFileDescriptor, IsDirectory }!u32 {
+		if ( self.node.vtable.read ) |f| {
+			return f( self.node, self, buf );
+		}
+
+		if ( self.node.ntype == .Directory ) {
+			return error.IsDirectory;
+		}
+
+		return error.BadFileDescriptor;
 	}
 
-	pub fn write( self: *FileDescriptor, buf: []const u8 ) u32 {
-		return self.node.write( self, buf );
+	pub fn write( self: *FileDescriptor, buf: []const u8 ) error{ BadFileDescriptor, IsDirectory }!u32 {
+		if ( self.node.vtable.write ) |f| {
+			return f( self.node, self, buf );
+		}
+
+		if ( self.node.ntype == .Directory ) {
+			return error.IsDirectory;
+		}
+
+		return error.BadFileDescriptor;
 	}
 
 	pub fn getEndPos( self: *FileDescriptor ) error{}!u64 {
@@ -269,20 +279,20 @@ pub const FileDescriptor = struct {
 	}
 };
 
-pub fn printTree( node: *Node, indent: usize ) void {
+pub fn printTree( node: *Node, name: [:0]const u8, indent: usize ) void {
 	for ( 0..indent ) |_| {
 		root.log.printUnsafe( "    ", .{} );
 	}
 
 	switch ( node.ntype ) {
 		.Directory => {
-			root.log.printUnsafe( "{s}/\n", .{ node.name } );
+			root.log.printUnsafe( "{s}/\n", .{ name } );
 			for ( node.readdir() ) |sn| {
-				printTree( sn, indent + 1 );
+				printTree( sn.node, sn.name, indent + 1 );
 			}
 		},
 		else => {
-			root.log.printUnsafe( "{s}\n", .{ node.name } );
+			root.log.printUnsafe( "{s}\n", .{ name } );
 		}
 	}
 }

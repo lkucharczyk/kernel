@@ -336,31 +336,61 @@ pub const Task = struct {
 
 		try seeker.seekTo( 0 );
 		const curElf = try elf.read( reader, seeker );
-		self.entrypoint = @ptrFromInt( curElf.header.e_entry );
 
-		const sections = try curElf.readSectionTable( alloc );
+		const segments = try curElf.readProgramTable( alloc );
 
 		self.programBreak = 0;
 		self.mmap.deinit();
 		self.mmap = MMap.init( root.kheap );
 
-		for ( sections ) |section| {
-			if ( ( section.sh_flags & std.elf.SHF_ALLOC ) > 0 ) {
-				const ptr = @as( [*]u8, @ptrFromInt( section.sh_addr ) )[0..section.sh_size];
+		for ( segments ) |segment| {
+			if ( segment.p_memsz > 0 and segment.p_type == std.elf.PT_LOAD ) {
+				const ptr = @as( [*]allowzero u8, @ptrFromInt( segment.p_vaddr ) )[0..segment.p_filesz];
 				self.programBreak = std.mem.alignForward( usize, @max( self.programBreak, @intFromPtr( ptr.ptr + ptr.len ) ), 4096 );
 
 				if ( try self.mmap.alloc( @intFromPtr( ptr.ptr ), ptr.len ) ) {
 					self.mmap.map();
 				}
 
-				if ( section.sh_type == std.elf.SHT_NOBITS ) {
-					@memset( ptr, 0 );
-				} else if ( section.sh_type != std.elf.SHT_NULL ) {
-					try seeker.seekTo( section.sh_offset );
-					_ = try reader.readAll( ptr );
+				try seeker.seekTo( segment.p_offset );
+				_ = try reader.readAll( _: {
+					@setRuntimeSafety( false );
+					break :_ @ptrCast( ptr );
+				} );
+
+				if ( segment.p_filesz < segment.p_memsz ) {
+					@memset( ptr.ptr[segment.p_filesz..segment.p_memsz], 0 );
 				}
+			} else if ( segment.p_memsz > 0 and segment.p_type == std.elf.PT_INTERP ) {
+				try seeker.seekTo( segment.p_offset );
+				const interp = try alloc.allocSentinel( u8, segment.p_filesz, 0 );
+				_ = try reader.readAll( interp );
+
+				const interpNode = vfs.rootNode.resolveDeep( interp[1..( std.mem.indexOfScalar( u8, interp, 0 ) orelse interp.len )] ) orelse return error.MissingFile;
+				const interpFd = try interpNode.open();
+				defer interpFd.close();
+
+				const interpArgs = if ( self.bin != null and !std.mem.eql( u8, std.mem.sliceTo( args[0][0], 0 ), self.bin.? ) ) _: {
+					const interpArgs = try alloc.alloc( [*:0]const u8, args[0].len + 3 );
+					interpArgs[0] = interp;
+					interpArgs[1] = "--argv0";
+					interpArgs[2] = args[0][0];
+					interpArgs[3] = self.bin orelse args[0][0];
+					@memcpy( interpArgs[4..], args[0][1..] );
+					break :_ interpArgs;
+				} else _: {
+					const interpArgs = try alloc.alloc( [*:0]const u8, args[0].len + 1 );
+					interpArgs[0] = interp;
+					@memcpy( interpArgs[1..], args[0] );
+					break :_ interpArgs;
+				};
+
+				try self.loadElf( interpFd.reader(), interpFd.seekableStream(), .{ interpArgs, args[1] } );
+				return;
 			}
 		}
+
+		self.entrypoint = @ptrFromInt( curElf.header.e_entry );
 
 		_ = try self.mmap.alloc( mem.ADDR_KMAIN_OFFSET - mem.PAGE_SIZE, mem.PAGE_SIZE );
 		self.mmap.map();
@@ -372,6 +402,18 @@ pub const Task = struct {
 		self.pushToUstack( std.elf.AT_NULL );
 		self.pushToUstack( 4096 );
 		self.pushToUstack( std.elf.AT_PAGESZ );
+
+		if ( curElf.header.e_type == .DYN ) {
+			self.pushToUstack( curElf.header.e_phnum );
+			self.pushToUstack( std.elf.AT_PHNUM );
+			self.pushToUstack( curElf.header.e_phentsize );
+			self.pushToUstack( std.elf.AT_PHENT );
+			self.pushToUstack( curElf.header.e_phoff );
+			self.pushToUstack( std.elf.AT_PHDR );
+		}
+
+		self.pushToUstack( @intFromPtr( self.entrypoint ) );
+		self.pushToUstack( std.elf.AT_ENTRY );
 
 		// env, argv
 		const dataAddr = std.mem.alignForward( usize, self.programBreak, 4096 );

@@ -11,7 +11,14 @@ fn getQemu( b: *std.Build, comptime arch: std.Target.Cpu.Arch, comptime debug: b
 		"sh", "-c",
 		bin
 			++ " -kernel ./zig-out/bin/kernel.elf"
-			++ " -initrd \"./zig-out/bin/kernel.dbg,./zig-out/bin/shell.elf,./vendor/sbase/sbase-box\""
+			++ " -initrd \""
+				++ "./zig-out/kernel.dbg,"
+				++ "./zig-out/bin/sbase-box-dynamic,"
+				++ "./zig-out/bin/sbase-box-static /bin/sbase-box,"
+				++ "./zig-out/bin/shell,"
+				++ "./zig-out/lib/libc.so /lib/ld-musl-i386.so.1 /lib/ld-musl-x86.so.1,"
+				++ "./vendor/sbase/cat.c /src/sbase/cat.c"
+				++ "\""
 			++ " -m 512M"
 			++ " -vga virtio"
 			++ " -device isa-debug-exit"
@@ -29,11 +36,46 @@ fn getQemu( b: *std.Build, comptime arch: std.Target.Cpu.Arch, comptime debug: b
 	return qemu;
 }
 
-fn setCcEnv( step: *std.Build.Step.Run, comptime arch: std.Target.Cpu.Arch ) void {
-	_ = arch;
+fn setCcEnv(
+	step: *std.Build.Step.Run,
+	comptime _: std.Target.Cpu.Arch,
+	comptime linkage: ?std.Build.Step.Compile.Linkage,
+	comptime prefix: []const u8,
+	comptime other: anytype
+) void {
+	const otherT = @TypeOf( other );
+	const sysroot = prefix ++ "/zig-out";
+
 	step.setEnvironmentVariable( "AR", "zig ar" );
-	step.setEnvironmentVariable( "CC", "zig cc -static -target x86-freestanding-none" );
 	step.setEnvironmentVariable( "RANLIB", "zig ranlib" );
+	step.setEnvironmentVariable(
+		"CC",
+		"zig cc "
+			++ (
+				if ( linkage ) |l| switch ( l ) {
+					.dynamic => "-dynamic -target x86-linux-musl -fPIC",
+					.static => "-static -target x86-freestanding-none",
+				} else (
+					"-target x86-freestanding-none"
+				)
+			)
+			++ " -ffreestanding -nostdinc -nostdlib -march=i386"
+			++ " -isystem" ++ sysroot ++ "/include/"
+			++ " -isysroot" ++ sysroot ++ "/"
+			++ " -L" ++ sysroot ++ "/lib/"
+	);
+
+	step.setEnvironmentVariable(
+		"LDFLAGS",
+		( if ( linkage == .dynamic ) "-dynamic-linker " ++ sysroot ++ "/lib/libc.so -z notext" else "" )
+			++ ( if ( @hasField( otherT, "LDFLAGS" ) ) " " ++ other.LDFLAGS else "" )
+	);
+
+	inline for ( @typeInfo( otherT ).Struct.fields ) |f| {
+		if ( !std.mem.eql( u8, f.name, "CC" ) and !std.mem.eql( u8, f.name, "LDFLAGS" ) ) {
+			step.setEnvironmentVariable( f.name, @field( other, f.name ) );
+		}
+	}
 }
 
 pub fn build( b: *std.Build ) !void {
@@ -62,7 +104,7 @@ pub fn build( b: *std.Build ) !void {
 	b.installArtifact( kernel );
 
 	const shell = b.addExecutable( .{
-		.name = "shell.elf",
+		.name = "shell",
 		.root_source_file = .{ .path = "src/shell.zig" },
 		.single_threaded = true,
 		.linkage = .static,
@@ -72,9 +114,15 @@ pub fn build( b: *std.Build ) !void {
 	shell.compress_debug_sections = .zlib;
 	b.installArtifact( shell );
 
-	var libcConfig = b.addSystemCommand( &.{ "./configure", "--prefix=../../zig-out/sys/", "--target=i386-freestanding-none", "--disable-shared" } );
-	setCcEnv( libcConfig, arch );
+	var libcConfig = b.addSystemCommand( &.{
+		"sh", "-c",
+		"LIBCC=$(clang -target i386-linux --rtlib=compiler-rt -print-libgcc-file-name) ./configure"
+			++ " --target=i386-freestanding-none"
+			++ " --prefix=../../zig-out/"
+			++ " --syslibdir=../../zig-out/lib"
+	} );
 	libcConfig.setCwd( .{ .path = "vendor/musl/" } );
+	setCcEnv( libcConfig, arch, null, "../..", .{} );
 
 	const libc = b.addSystemCommand( &.{ "make", "-j", "install" } );
 	libc.setCwd( .{ .path = "vendor/musl/" } );
@@ -83,13 +131,43 @@ pub fn build( b: *std.Build ) !void {
 	}
 	b.getInstallStep().dependOn( &libc.step );
 
-	const sbase = b.addSystemCommand( &.{ "make", "-j", "sbase-box" } );
-	sbase.step.dependOn( &libc.step );
-	sbase.setCwd( .{ .path = "vendor/sbase/" } );
-	setCcEnv( sbase, arch );
-	sbase.setEnvironmentVariable( "CFLAGS", "-march=i486 -isystem ../../zig-out/sys/include/ -include ../../zig-out/sys/include/limits.h" );
-	sbase.setEnvironmentVariable( "LDFLAGS", "-L../../zig-out/sys/lib/ ../../zig-out/sys/lib/libc.a ../../zig-out/sys/lib/crt1.o" );
-	b.getInstallStep().dependOn( &sbase.step );
+	const sbaseDyn = b.addSystemCommand( &.{
+		"sh", "-c",
+		"make clean"
+			++ "&& make -j sbase-box"
+			++ "&& patchelf"
+				++ " --set-interpreter /lib/ld-musl-i386.so.1"
+				++ " --replace-needed ../../zig-out/lib/libc.so /lib/libc.so"
+				++ " --output ../../zig-out/bin/sbase-box-dynamic"
+				++ " ./sbase-box"
+	} );
+	sbaseDyn.step.dependOn( &libc.step );
+	sbaseDyn.setCwd( .{ .path = "vendor/sbase/" } );
+	setCcEnv( sbaseDyn, arch, .dynamic, "../..", .{
+		.CFLAGS = "-include ../../zig-out/include/limits.h",
+		.LDFLAGS = "-lc"
+	} );
+
+	const sbaseStatic = b.addSystemCommand( &.{
+		"sh", "-c",
+		"make clean"
+			++ "&& make -j sbase-box"
+			++ "&& cp ./sbase-box ../../zig-out/bin/sbase-box-static"
+	} );
+	sbaseStatic.step.dependOn( &libc.step );
+	sbaseStatic.setCwd( .{ .path = "vendor/sbase/" } );
+	setCcEnv( sbaseStatic, arch, .static, "../..", .{
+		.CFLAGS = "-include ../../zig-out/include/limits.h",
+		.LDFLAGS = "../../zig-out/lib/libc.a ../../zig-out/lib/crt1.o"
+	} );
+
+	if ( ( std.fs.cwd().access( "./zig-out/bin/sbase-box-dynamic", .{} ) catch null ) == null ) {
+		b.getInstallStep().dependOn( &sbaseDyn.step );
+		sbaseStatic.step.dependOn( &sbaseDyn.step );
+	}
+	if ( ( std.fs.cwd().access( "./zig-out/bin/sbase-box-static", .{} ) catch null ) == null ) {
+		b.getInstallStep().dependOn( &sbaseStatic.step );
+	}
 
 	const embedSymbols = b.addSystemCommand( &.{
 		"sh", "-c",
@@ -124,7 +202,7 @@ pub fn build( b: *std.Build ) !void {
 	b.getInstallStep().dependOn( &embedSymbols.step );
 
 	const genSymbols = b.addSystemCommand( &.{
-		"objcopy", "--only-keep-debug", "./zig-out/bin/kernel.elf", "./zig-out/bin/kernel.dbg"
+		"objcopy", "--only-keep-debug", "./zig-out/bin/kernel.elf", "./zig-out/kernel.dbg"
 	} );
 	genSymbols.step.dependOn( &kernel.step );
 	b.getInstallStep().dependOn( &genSymbols.step );
@@ -141,8 +219,10 @@ pub fn build( b: *std.Build ) !void {
 
 	const libcClean = b.addSystemCommand( &.{ "make", "clean" } );
 	libcClean.setCwd( .{ .path = "./vendor/musl/" } );
+	b.getUninstallStep().dependOn( &libcClean.step );
 	const sbaseClean = b.addSystemCommand( &.{ "make", "clean" } );
 	sbaseClean.setCwd( .{ .path = "./vendor/sbase/" } );
-	b.getUninstallStep().dependOn( &libcClean.step );
 	b.getUninstallStep().dependOn( &sbaseClean.step );
+	b.getUninstallStep().dependOn( &b.addSystemCommand( &.{ "rm", "vendor/musl/config.mak" } ).step );
+	b.getUninstallStep().dependOn( &b.addSystemCommand( &.{ "rm", "-rf", "zig-out/" } ).step );
 }

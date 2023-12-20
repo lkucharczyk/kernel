@@ -37,8 +37,8 @@ pub const Interface = struct {
 		};
 		subnet += 1;
 
-		self.fsNode.init( subnet - 101, &[4:0]u8 { 'n', 'e', 't', '0' + ( subnet - 101 ) }, .Unknown, self, .{ .ioctl = &ioctl } );
-		vfs.devNode.link( &self.fsNode ) catch unreachable;
+		self.fsNode.init( subnet - 101, .Unknown, self, .{ .ioctl = &ioctl } );
+		vfs.devNode.link( &self.fsNode, &[4:0]u8 { 'n', 'e', 't', '0' + ( subnet - 101 ) } ) catch unreachable;
 	}
 
 	pub fn deinit( self: *Interface ) void {

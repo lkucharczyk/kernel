@@ -150,8 +150,8 @@ fn onKey( _: *x86.State ) void {
 
 pub fn init() void {
 	irq.set( irq.Interrupt.Keyboard, onKey );
-	fsNode.init( 1, "kbd0", .CharDevice, undefined, .{ .read = &fsRead } );
-	vfs.devNode.link( &fsNode ) catch unreachable;
+	fsNode.init( 1, .CharDevice, undefined, .{ .read = &fsRead } );
+	vfs.devNode.link( &fsNode, "kbd0" ) catch unreachable;
 }
 
 pub fn read( buf: []u8, fd: ?*vfs.FileDescriptor ) usize {
@@ -173,6 +173,9 @@ pub fn read( buf: []u8, fd: ?*vfs.FileDescriptor ) usize {
 		}
 
 		buf[i] = state.buffer.pop().?;
+		if ( buf[i] == 0x04 ) {
+			return i;
+		}
 	}
 
 	if ( state.buffer.isEmpty() ) {

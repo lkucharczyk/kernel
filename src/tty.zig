@@ -45,11 +45,11 @@ pub fn init() void {
 	vga.setControlReg( vga.ControlRegister.CursorStart, @intFromEnum( Cursor.Thin ) );
 	clear();
 
-	fsNode.init( 1, "tty0", .CharDevice, undefined, .{
+	fsNode.init( 1, .CharDevice, undefined, .{
 		.write = &writeFs,
 		.ioctl = &ioctl
 	} );
-	vfs.devNode.link( &fsNode ) catch unreachable;
+	vfs.devNode.link( &fsNode, "tty0" ) catch unreachable;
 }
 
 pub fn clear() void {

@@ -80,7 +80,7 @@ fn getSymbol( address: usize ) ?[]const u8 {
 
 inline fn printSymbol( addr: usize, di: *?elf.DwarfInfo, fallback: []const u8 ) void {
 	if ( di.* ) |*i| {
-		if ( i.printSymbol( root.log.writer(), root.kheap, addr - 1 ) catch false ) {
+		if ( i.printSymbol( root.log.writer(), root.kheap, addr ) catch false ) {
 			return;
 		}
 	}

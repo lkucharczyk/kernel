@@ -1,7 +1,7 @@
 const std = @import( "std" );
 const root = @import( "root" );
+const multiboot = @import( "./multiboot.zig" );
 
-const KMAIN_PAGES = 2;
 pub const ADDR_KMAIN_OFFSET = 0xc000_0000;
 extern const ADDR_KMAIN_END: u8;
 
@@ -54,14 +54,14 @@ pub const PagingDir = extern struct {
 
 	entries: [1024]Entry = .{ .{} } ** 1024,
 
-	pub fn init( comptime pages: comptime_int ) PagingDir {
+	pub fn init() PagingDir {
 		@setRuntimeSafety( false );
 
 		var out: PagingDir = .{};
 		out.entries[0] = .{ .addressLow = 0, .flags = Flags.KERNEL_HUGE_RW };
 
-		const kpage = ADDR_KMAIN_OFFSET >> 22;
-		for ( kpage..( kpage + pages ), 0.. ) |i, j| {
+		const kpage = ADDR_KMAIN_OFFSET >> PAGE_LOG2;
+		for ( kpage..out.entries.len, 0.. ) |i, j| {
 			out.entries[i] = .{ .addressLow = j, .flags = Flags.KERNEL_HUGE_RW };
 		}
 
@@ -89,12 +89,12 @@ pub const PagingDir = extern struct {
 	}
 };
 
-pub export var _pagingDir: PagingDir align(4096) linksection(".multiboot") = PagingDir.init( KMAIN_PAGES );
+pub export var _pagingDir: PagingDir align(4096) linksection(".multiboot") = PagingDir.init();
 pub var pagingDir: *PagingDir align(4096) = undefined;
 pub var physicalPages: std.bit_set.ArrayBitSet( usize, 1024 ) = undefined;
 
-pub var kbrk: usize = ADDR_KMAIN_OFFSET + ( KMAIN_PAGES << PAGE_LOG2 );
-var kpages: u10 = KMAIN_PAGES;
+pub var kbrk: usize = ADDR_KMAIN_OFFSET + ( 1 << PAGE_LOG2 );
+var kpages: u10 = 1;
 fn ksbrk( inc: usize ) usize {
 	while ( kbrk + inc >= ADDR_KMAIN_OFFSET + @as( usize, kpages ) * PAGE_SIZE ) {
 		const phys = allocPhysical( true ) catch return 0;
@@ -117,21 +117,39 @@ fn ksbrk( inc: usize ) usize {
 pub var kheapSbrk = std.heap.SbrkAllocator( ksbrk ) {};
 pub var kheapGpa = std.heap.GeneralPurposeAllocator( .{ .safety = false } ) {};
 
-pub fn init() void {
-	root.log.printUnsafe( "mem: {}/{} KB\n\n", .{
-		( @intFromPtr( &ADDR_KMAIN_END ) - ADDR_KMAIN_OFFSET ) / 1024,
-		KMAIN_PAGES * 4 * 1024
-	} );
-
-	if ( @intFromPtr( &ADDR_KMAIN_END ) > ADDR_KMAIN_OFFSET + KMAIN_PAGES * 4 * 1024 * 1024 ) {
-		@panic( "Not enough pages for static kernel memory" );
-	}
+pub fn init( mbInfo: ?*multiboot.Info ) void {
+	// root.log.printUnsafe( "mem: {}/{} KB\n\n", .{
+	// 	( @intFromPtr( &ADDR_KMAIN_END ) - ADDR_KMAIN_OFFSET ) / 1024,
+	// 	KMAIN_PAGES * 4 * 1024
+	// } );
 
 	pagingDir = @ptrFromInt( @intFromPtr( &_pagingDir ) + ADDR_KMAIN_OFFSET );
 	physicalPages = std.bit_set.ArrayBitSet( usize, 1024 ).initEmpty();
-	for ( 0..KMAIN_PAGES ) |p| {
+	physicalPages.set( 0 );
+
+	kbrk = @intFromPtr( &ADDR_KMAIN_END );
+	if ( mbInfo != null and mbInfo.?.getModules() != null ) {
+		for ( mbInfo.?.getModules().? ) |mod| {
+			const end = mod.addrEnd + ADDR_KMAIN_OFFSET;
+			if ( end > kbrk ) {
+				kbrk = end;
+			}
+		}
+	}
+
+	const offset = ADDR_KMAIN_OFFSET >> PAGE_LOG2;
+	kbrk = std.mem.alignForward( usize, kbrk, 4096 );
+	kpages = @as( u10, @truncate( ( std.mem.alignForwardLog2( kbrk, PAGE_LOG2 ) >> PAGE_LOG2 ) - offset ) );
+	for ( 0..kpages ) |p| {
 		physicalPages.set( p );
 	}
+
+	for ( ( offset + kpages )..1024 ) |p| {
+		pagingDir.entries[p].flags.present = false;
+	}
+
+	pagingDir.unmap( 0 );
+	root.arch.invalidateTlb();
 }
 
 pub fn allocPhysical( zero: bool ) error{ OutOfMemory }!u10 {

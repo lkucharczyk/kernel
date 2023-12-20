@@ -56,7 +56,7 @@ pub fn main() anyerror!void {
 	var s: usize = try stdin.read( &inbuf );
 
 	while ( s != 0 ) : ( s = try stdin.read( &inbuf ) ) {
-		for ( inbuf ) |c| {
+		for ( inbuf[0..s] ) |c| {
 			if ( p > 0 and c == 0x03 ) { // ctrl-c
 				write( "\x1b[7m" ++ "^C" ++ "\x1b[0m" ++ "\n" );
 				p = 0;
@@ -119,7 +119,11 @@ pub const BINARIES_SBASE = [_][:0]const u8{
 	"whoami", "xargs", "xinstall", "yes"
 };
 
-const BINARIES = [_][:0]const u8{ "/bin/sbase-box", "/bin/shell" };
+const BINARIES = [_][:0]const u8{
+	"/bin/sbase-box", "/bin/sbase-box-dynamic", "/bin/sbase-box-static",
+	"/bin/shell",
+	"/lib/libc.so", "/lib/ld-musl-i386.so.1", "/lib/ld-musl-x86.so.1"
+};
 
 fn extractBin( name: []const u8 ) ?[:0]const u8 {
 	for ( &BINARIES ) |bin| {
@@ -267,8 +271,12 @@ fn process( cmd: []const u8 ) OsError!void {
 			defer arena.deinit();
 
 			const argv0 = try aalloc.allocSentinel( u8, 5 + cmd0.len, 0 );
-			@memcpy( argv0[0..5], "/bin/" );
+			@memcpy( argv0[0..5], bin[0..5] );
 			@memcpy( argv0[5..], cmd0 );
+
+			if ( std.mem.startsWith( u8, argv0, "/bin/sbase-box-" ) ) {
+				@memset( argv0[14..], 0 );
+			}
 
 			const argv = try aalloc.allocSentinel( ?[*:0]u8, std.mem.count( u8, iter.rest(), " " ) + 2, null );
 			@memset( argv, null );
@@ -280,7 +288,8 @@ fn process( cmd: []const u8 ) OsError!void {
 			}
 
 			if ( try h( system.vfork() ) == 0 ) {
-				_ = try h( system.execve( bin, argv.ptr, undefined ) );
+				_ = h( system.execve( bin, argv.ptr, undefined ) ) catch {};
+				system.exit( 1 );
 			}
 		} else {
 			print( "! Unknown command: \"{s}\"\n", .{ cmd0 } );

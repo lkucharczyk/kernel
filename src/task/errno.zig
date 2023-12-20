@@ -9,6 +9,9 @@ pub const Error = error {
 	OutOfMemory,
 	PermissionDenied,
 	InvalidPointer,
+	FileExists,
+	NotDirectory,
+	IsDirectory,
 	InvalidArgument,
 	NotImplemented,
 	NotSocket,
@@ -36,6 +39,12 @@ pub const Errno = enum(i16) {
 	PermissionDenied          = 13,
 	/// EFAULT
 	InvalidPointer            = 14,
+	/// EEXIST
+	FileExists                = 17,
+	/// ENOTDIR
+	NotDirectory              = 20,
+	/// EISDIR
+	IsDirectory               = 21,
 	/// EINVAL
 	InvalidArgument           = 22,
 	/// ENOSYS
@@ -61,6 +70,9 @@ pub const Errno = enum(i16) {
 			Error.OutOfMemory               => .OutOfMemory,
 			Error.PermissionDenied          => .PermissionDenied,
 			Error.InvalidPointer            => .InvalidPointer,
+			Error.FileExists                => .FileExists,
+			Error.NotDirectory              => .NotDirectory,
+			Error.IsDirectory               => .IsDirectory,
 			Error.InvalidArgument           => .InvalidArgument,
 			Error.NotImplemented            => .NotImplemented,
 			Error.NotSocket                 => .NotSocket,

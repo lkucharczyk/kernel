@@ -88,15 +88,18 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 
 	// enable protected mode
 	asm volatile (
-		\\ movl %%cr0, %%eax
-		\\ orl $0x01, %%eax
-		\\ movl %%eax, %%cr0
+		\\ movl %%cr0, %%ecx
+		\\ orl $0x01, %%ecx
+		\\ movl %%ecx, %%cr0
 		\\ jmp $0x08, $kmain_pm
 		\\ kmain_pm:
 	);
 
-	mem.pagingDir.unmap( 0 );
-	mem.init();
+	if ( mbMagic == multiboot.Info.MAGIC ) {
+		mem.init( mbInfo );
+	} else {
+		mem.init( null );
+	}
 
 	ktry( vfs.init() );
 
@@ -112,12 +115,13 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	@import( "./isr.zig" ).init();
 	@import( "./irq.zig" ).init();
 
-	var shell: ?[]const u8 = null;
+	log.printUnsafe( "mem.kbrk: {x:0>8}\n\n", .{ mem.kbrk } );
+
 	if ( mbMagic == multiboot.Info.MAGIC ) {
 		log.printUnsafe( "multiboot: {x:0>8}\n{?}\nbootloader: {}\ncmdline: {?}\n", .{
 			mbMagic, mbInfo,
 			fmtUtil.OptionalCStr { .data = mbInfo.?.getBootloaderName() },
-			fmtUtil.OptionalCStr { .data = mbInfo.?.getCmdline() }
+			fmtUtil.OptionalStr { .data = mbInfo.?.getCmdline() }
 		} );
 
 		if ( mbInfo.?.getMemoryMap() ) |mmap| {
@@ -129,28 +133,41 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 
 		if ( mbInfo.?.getModules() ) |modules| {
 			log.printUnsafe( "modules:\n", .{} );
-			const binNode: *vfs.Node = ktry( vfs.rootNode.mkdir( "bin" ) );
-			const modulesNode: *vfs.Node = ktry( vfs.rootNode.mkdir( "mods" ) );
+			// const modulesNode: *vfs.Node = ktry( vfs.rootNode.mkdir( "mods" ) );
 
-			for ( modules, 0.. ) |module, i| {
+			for ( modules ) |module| {
 				log.printUnsafe( "    - {}\n", .{ module } );
 
-				const name = [4:0]u8 { 'm', 'o', 'd', '0' + @as( u8, @truncate( i ) ) };
-				ktry( modulesNode.link(
-					ktry( vfs.rootVfs.createRoFile( &name, module.getData() ) )
-				) );
+				const node = ktry( vfs.rootVfs.createRoFile( module.getData() ) );
+				// const name = [4:0]u8 { 'm', 'o', 'd', '0' + @as( u8, @truncate( i ) ) };
+				// ktry( modulesNode.link( node, &name ) );
 
 				if ( module.getCmdline() ) |cmdline| {
-					inline for ( .{
-						.{ "kernel.dbg", vfs.rootNode, "kernel.dbg" },
-						.{ "shell.elf", binNode, "shell" },
-						.{ "sbase-box", binNode, "sbase-box" }
-					} ) |data| {
-						if ( std.mem.endsWith( u8, std.mem.sliceTo( cmdline, 0 ), data[0] ) ) {
-							shell = module.getData();
-							ktry( data[1].link(
-								ktry( vfs.rootVfs.createRoFile( data[2], module.getData() ) )
-							) );
+					const cmd = std.mem.sliceTo( cmdline, 0 );
+					var targetIter = if ( std.mem.startsWith( u8, cmd, "./zig-out/" ) ) (
+						std.mem.splitScalar( u8, cmd[9..], ' ' )
+					) else if ( std.mem.indexOfScalar( u8, cmd, ' ' ) ) |p| (
+						std.mem.splitScalar( u8, cmd[( p + 1 )..], ' ' )
+					) else {
+						continue;
+					};
+
+					while ( targetIter.next() ) |target| {
+						var dir = vfs.rootNode;
+						var partIter = std.mem.splitScalar( u8, target[1..], '/' );
+
+						while ( partIter.next() ) |part| {
+							if ( dir.resolve( part ) ) |next| {
+								std.debug.assert( next.ntype == .Directory );
+								dir = next;
+							} else {
+								if ( partIter.peek() == null ) {
+									_ = ktry( dir.link( node, part ) );
+									break;
+								} else {
+									dir = ktry( dir.mkdir( part ) );
+								}
+							}
 						}
 					}
 				}
@@ -195,20 +212,23 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	}
 
 	@import( "./pit.zig" ).init( 100 );
-	ktry( @import( "./pci.zig" ).init() );
-	kbd.init();
-	log.printUnsafe( "\n", .{} );
-
 	syscall.init();
 	ktry( task.init() );
 	@import( "./panic.zig" ).earlyPanic = false;
 
+	@import( "./rtc.zig" ).init();
+	log.writeUnsafe( "\n" );
+
+	ktry( @import( "./pci.zig" ).init() );
+	kbd.init();
+	log.writeUnsafe( "\n" );
+
 	ktry( @import( "./net.zig" ).init() );
 	ktry( @import( "./drivers/rtl8139.zig" ).init() );
-	log.printUnsafe( "\n", .{} );
+	log.writeUnsafe( "\n" );
 
-	@import( "./vfs.zig" ).printTree( @import( "./vfs.zig" ).rootNode, 0 );
-	log.printUnsafe( "\n", .{} );
+	vfs.printTree( vfs.rootNode, "[RootVFS]", 0 );
+	log.writeUnsafe( "\n" );
 
 	if ( vfs.rootNode.resolveDeep( "bin/shell" ) ) |node| {
 		var elf: *vfs.FileDescriptor = ktry( node.open() );

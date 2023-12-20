@@ -48,7 +48,7 @@ pub const Socket = struct {
 		self.rxQueue = Queue( Message ).init( alloc, 16 ) catch unreachable;
 
 		self.address = .{ .ipv4 = .{} };
-		self.node.init( 1, "socket", .Socket, self, .{
+		self.node.init( 1, .Socket, self, .{
 			.close = &deinit,
 			.read = &read
 		} );

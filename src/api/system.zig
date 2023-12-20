@@ -40,8 +40,12 @@ pub fn sbrk( inc: usize ) usize {
 		_brk = brk( 0 );
 	}
 
-	const out = brk( _brk + inc );
-	_brk += inc;
+	if ( inc == 0 ) {
+		return _brk;
+	}
+
+	const out = _brk;
+	_brk = brk( _brk + inc );
 
 	return out;
 }

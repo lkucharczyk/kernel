@@ -94,7 +94,8 @@ pub const SerialPort = struct {
 		.open = &fsOpen,
 		.close = &fsClose,
 		.read = &fsRead,
-		.write = &fsWrite
+		.write = &fsWrite,
+		.ioctl = &ioctl
 	};
 
 	address: u16,
@@ -186,8 +187,12 @@ pub const SerialPort = struct {
 			}
 
 			buf[i] = self.buffer.pop().?;
-			if ( buf[i] == '\r' ) {
-				buf[i] = '\n';
+			switch ( buf[i] ) {
+				0x04 => return i,
+				'\r' => {
+					buf[i] = '\n';
+				},
+				else => {}
 			}
 		}
 
@@ -263,6 +268,22 @@ pub const SerialPort = struct {
 		return ctx.write( buf );
 	}
 
+	fn ioctl( node: *vfs.Node, _: *vfs.FileDescriptor, cmd: u32, arg: usize ) @import( "./task.zig" ).Error!i32 {
+		const self: *SerialPort = @alignCast( @ptrCast( node.ctx ) );
+		_ = self;
+
+		if ( cmd == std.os.linux.T.IOCGWINSZ ) {
+			const ws: *std.os.linux.winsize = @ptrFromInt( arg );
+			ws.ws_row = 0;
+			ws.ws_col = 0;
+			ws.ws_xpixel = 0;
+			ws.ws_ypixel = 0;
+			return 0;
+		}
+
+		return error.BadFileDescriptor;
+	}
+
 	pub fn reader( self: *SerialPort ) std.io.Reader( SerialPort, error{}, streamRead ) {
 		return .{ .context = self };
 	}
@@ -314,8 +335,8 @@ pub fn init() void {
 		ports[i] = SerialPort.init( f.value );
 
 		if ( ports[i] ) |*port| {
-			port.fsNode.init( 1, &[4:0]u8{ 'c', 'o', 'm', i + '0' }, .CharDevice, port, SerialPort.VTable );
-			vfs.devNode.link( &port.fsNode ) catch unreachable;
+			port.fsNode.init( 1, .CharDevice, port, SerialPort.VTable );
+			vfs.devNode.link( &port.fsNode, &[4:0]u8{ 'c', 'o', 'm', i + '0' } ) catch unreachable;
 		}
 	}
 

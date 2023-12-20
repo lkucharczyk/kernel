@@ -16,18 +16,18 @@ pub const Fadt = extern struct {
 
 	header: Header,
 	facsPtr: u32,
-	dstdPtr: u32,
+	dsdtPtr: u32,
 	_: u8,
 	powerProfile: PowerProfile,
 	sciIntPin: u16,
 	smiPort: u32,
 
 	pub fn format( self: Fadt, _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
-		try std.fmt.format( writer, "{s}{{ .header = {}, .facsPtr = FACS@{x:0>8}, .dstdPtr = DSTD@{x:0>8}, .powerProfile = .{s}, .sciPinInt = {}, .smiPort = 0x{x} }}", .{
+		try std.fmt.format( writer, "{s}{{ .header = {}, .facsPtr = FACS@{x:0>8}, .dsdtPtr = DSDT@{x:0>8}, .powerProfile = .{s}, .sciPinInt = {}, .smiPort = 0x{x} }}", .{
 			@typeName( Fadt ),
 			self.header,
 			self.facsPtr + mem.ADDR_KMAIN_OFFSET,
-			self.dstdPtr + mem.ADDR_KMAIN_OFFSET,
+			self.dsdtPtr + mem.ADDR_KMAIN_OFFSET,
 			@tagName( self.powerProfile ),
 			self.sciIntPin,
 			self.smiPort

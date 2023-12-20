@@ -37,6 +37,15 @@ const Elf32 = struct {
 	reader: std.io.AnyReader,
 	seeker: AnySeekableStream,
 
+	pub fn readProgramTable( self: Elf32, alloc: std.mem.Allocator ) anyerror![]std.elf.Elf32_Phdr {
+		try self.seeker.seekTo( self.header.e_phoff );
+		const segments = try alloc.alloc( std.elf.Elf32_Phdr, self.header.e_phnum );
+
+		_ = try self.reader.readAll( std.mem.sliceAsBytes( segments ) );
+
+		return segments;
+	}
+
 	pub fn readSectionTable( self: Elf32, alloc: std.mem.Allocator ) anyerror![]std.elf.Elf32_Shdr {
 		try self.seeker.seekTo( self.header.e_shoff );
 		const sections = try alloc.alloc( std.elf.Elf32_Shdr, self.header.e_shnum );

@@ -85,9 +85,9 @@ pub const Info = extern struct {
 		return null;
 	}
 
-	pub fn getCmdline( self: Info ) ?[*:0]const u8 {
+	pub fn getCmdline( self: Info ) ?[:0]const u8 {
 		if ( self.flags.cmdline ) {
-			return @ptrFromInt( mem.ADDR_KMAIN_OFFSET + self.cmdline );
+			return std.mem.sliceTo( @as( [*:0]const u8, @ptrFromInt( mem.ADDR_KMAIN_OFFSET + self.cmdline ) ), 0 );
 		}
 
 		return null;
@@ -141,9 +141,9 @@ pub const Module = extern struct {
 	cmdline: u32 align(1),
 	pad: u32 align(1),
 
-	pub fn getCmdline( self: Module ) ?[*:0]const u8 {
+	pub fn getCmdline( self: Module ) ?[:0]const u8 {
 		if ( self.cmdline != 0 ) {
-			return @ptrFromInt( mem.ADDR_KMAIN_OFFSET + self.cmdline );
+			return std.mem.sliceTo( @as( [*:0]const u8, @ptrFromInt( mem.ADDR_KMAIN_OFFSET + self.cmdline ) ), 0 );
 		}
 
 		return null;
@@ -157,7 +157,7 @@ pub const Module = extern struct {
 		try std.fmt.format(
 			writer,
 			"{x:0>8}-{x:0>8} \"{s}\"",
-			.{ self.addrStart, self.addrEnd - 1, self.getCmdline().? }
+			.{ mem.ADDR_KMAIN_OFFSET + self.addrStart, mem.ADDR_KMAIN_OFFSET + self.addrEnd - 1, self.getCmdline().? }
 		);
 	}
 };

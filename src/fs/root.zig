@@ -10,7 +10,7 @@ const FileContext = struct {
 const DirContext = struct {
 	fs: *RootVfs,
 	parent: ?*vfs.Node = null,
-	subnodes: std.ArrayListUnmanaged( vfs.Link ) = std.ArrayListUnmanaged( vfs.Link ) {},
+	subnodes: std.ArrayListUnmanaged( vfs.Link ) = .{},
 	mount: ?*vfs.Node = null
 };
 

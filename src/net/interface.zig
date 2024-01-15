@@ -46,14 +46,23 @@ pub const Interface = struct {
 		self.rxQueue.deinit();
 	}
 
-	pub inline fn send( self: Interface, dest: ethernet.Address, proto: ethernet.EtherType, body: ethernet.Body ) void {
-		self.device.send( ethernet.Frame {
+	pub fn send( self: *Interface, dest: ethernet.Address, proto: ethernet.EtherType, body: ethernet.Body ) void {
+		const frame = ethernet.Frame {
 			.header = .{
 				.dest = dest,
 				.protocol = proto
 			},
 			.body = body
-		} );
+		};
+
+		if ( dest.eq( self.device.hwAddr ) ) {
+			if ( self.push( frame.len() ) ) |bufFrame| {
+				bufFrame.getHeader().* = frame.header;
+				body.copyTo( bufFrame.getBody() );
+			}
+		} else {
+			self.device.send( frame );
+		}
 	}
 
 	pub fn push( self: *Interface, len: u16 ) ?*align(2) ethernet.FrameOpaque {

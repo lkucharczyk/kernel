@@ -162,6 +162,7 @@ pub fn panic( msg: []const u8, trace: ?*std.builtin.StackTrace, retAddr: ?usize 
 	if ( inPanic ) {
 		root.log.printUnsafe( "\n\n!!! Double panic detected\n{s}\n", .{ msg } );
 		// printStack( @frameAddress() );
+		root.log.writeUnsafe( "\x1b[0m" ++ "\x1b[?25h" );
 		x86.out( u16, 0x0604, 0x2000 );
 		x86.halt();
 	}
@@ -178,6 +179,7 @@ pub fn panic( msg: []const u8, trace: ?*std.builtin.StackTrace, retAddr: ?usize 
 	}
 
 	// QEMU shutdown
+	root.log.writeUnsafe( "\x1b[0m" ++ "\x1b[?25h" );
 	x86.out( u16, 0x0604, 0x2000 );
 	x86.halt();
 }

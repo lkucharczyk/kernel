@@ -30,7 +30,7 @@ pub var netTask: *task.Task = undefined;
 var pollfd: std.ArrayListUnmanaged( task.PollFd ) = undefined;
 var subtasks: std.ArrayListUnmanaged( *const fn( *task.PollFd ) void ) = undefined;
 
-var loEthernet: loopback.Ethernet = undefined;
+pub var loEthernet: loopback.Ethernet = undefined;
 
 pub fn createInterface( device: Device ) *Interface {
 	var ptr = interfaces.addOne( root.kheap ) catch unreachable;

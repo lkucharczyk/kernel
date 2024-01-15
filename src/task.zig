@@ -343,9 +343,14 @@ pub const Task = struct {
 		self.mmap.deinit();
 		self.mmap = MMap.init( root.kheap );
 
+		var offset: usize = 0;
+		if ( curElf.header.e_type == .DYN ) {
+			offset = 0xa000_0000;
+		}
+
 		for ( segments ) |segment| {
 			if ( segment.p_memsz > 0 and segment.p_type == std.elf.PT_LOAD ) {
-				const ptr = @as( [*]allowzero u8, @ptrFromInt( segment.p_vaddr ) )[0..segment.p_filesz];
+				const ptr = @as( [*]allowzero u8, @ptrFromInt( segment.p_vaddr + offset ) )[0..segment.p_filesz];
 				self.programBreak = std.mem.alignForward( usize, @max( self.programBreak, @intFromPtr( ptr.ptr + ptr.len ) ), 4096 );
 
 				if ( try self.mmap.alloc( @intFromPtr( ptr.ptr ), ptr.len ) ) {
@@ -390,7 +395,8 @@ pub const Task = struct {
 			}
 		}
 
-		self.entrypoint = @ptrFromInt( curElf.header.e_entry );
+		self.entrypoint = @ptrFromInt( curElf.header.e_entry + offset );
+		self.stackBreak = std.mem.alignBackward( usize, mem.ADDR_KMAIN_OFFSET - 1, 64 );
 
 		_ = try self.mmap.alloc( mem.ADDR_KMAIN_OFFSET - mem.PAGE_SIZE, mem.PAGE_SIZE );
 		self.mmap.map();
@@ -404,12 +410,14 @@ pub const Task = struct {
 		self.pushToUstack( std.elf.AT_PAGESZ );
 
 		if ( curElf.header.e_type == .DYN ) {
-			self.pushToUstack( curElf.header.e_phnum );
+			self.pushToUstack( curElf.header.e_phnum + offset );
 			self.pushToUstack( std.elf.AT_PHNUM );
-			self.pushToUstack( curElf.header.e_phentsize );
+			self.pushToUstack( curElf.header.e_phentsize + offset );
 			self.pushToUstack( std.elf.AT_PHENT );
-			self.pushToUstack( curElf.header.e_phoff );
+			self.pushToUstack( curElf.header.e_phoff + offset );
 			self.pushToUstack( std.elf.AT_PHDR );
+			self.pushToUstack( offset );
+			self.pushToUstack( std.elf.AT_BASE );
 		}
 
 		self.pushToUstack( @intFromPtr( self.entrypoint ) );
@@ -431,7 +439,11 @@ pub const Task = struct {
 		}
 
 		self.pushToUstack( args[0].len );
-		self.programBreak = std.mem.alignForward( usize, dataAddr + dataOff, 4096 );
+		if ( curElf.header.e_type == .DYN ) {
+			self.programBreak = mem.PAGE_SIZE;
+		} else {
+			self.programBreak = std.mem.alignForward( usize, dataAddr + dataOff, 4096 );
+		}
 
 		self.mmap.unmap();
 	}
@@ -496,8 +508,9 @@ pub fn create( entrypoint: *const fn( argc: [*]usize ) callconv(.C) void, kernel
 	@panic( "Can't create a new task" );
 }
 
-pub fn createElf( reader: std.io.AnyReader, seeker: AnySeekableStream, args: [2][]const [*:0]const u8 ) !*Task {
+pub fn createElf( reader: std.io.AnyReader, seeker: AnySeekableStream, bin: [:0]const u8, args: [2][]const [*:0]const u8 ) !*Task {
 	const newTask = create( @ptrFromInt( 0xdeaddead ), false );
+	newTask.bin = try root.kheap.dupeZ( u8, bin );
 	try newTask.loadElf( reader, seeker, args );
 	newTask.kstack[newTask.kstack.len - 14] = @truncate( @intFromPtr( newTask.entrypoint ) );
 	newTask.kstack[newTask.kstack.len - 11] = newTask.stackBreak;

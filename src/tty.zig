@@ -71,6 +71,9 @@ fn putc( c: u8 ) void {
 				buf[i] = color | ' ';
 			}
 		},
+		'\r' => {
+			col = 0;
+		},
 		'\n' => {
 			if ( softLF ) {
 				softLF = true;
@@ -157,9 +160,24 @@ pub fn write( _: ?*anyopaque, msg: []const u8 ) error{}!usize {
 			} else if ( std.mem.startsWith( u8, msg[i..], "0m" ) ) {
 				color = 0x0700;
 				i += 1;
+			} else if ( std.mem.startsWith( u8, msg[i..], "3m" ) ) {
+				// italic; not supported
+				i += 1;
 			} else if ( std.mem.startsWith( u8, msg[i..], "7m" ) ) {
 				color = ( ( color << 4 ) & 0xf000 ) | ( ( color >> 4 ) & 0x0f00 );
 				i += 1;
+			} else if ( std.mem.startsWith( u8, msg[i..], "32m" ) ) {
+				color = ( color & 0xf000 ) | ( @as( u16, @intFromEnum( Color.Green ) ) << 8 );
+				i += 2;
+			} else if ( std.mem.startsWith( u8, msg[i..], "33m" ) ) {
+				color = ( color & 0xf000 ) | ( @as( u16, @intFromEnum( Color.LightBrown ) ) << 8 );
+				i += 2;
+			} else if ( std.mem.startsWith( u8, msg[i..], "34m" ) ) {
+				color = ( color & 0xf000 ) | ( @as( u16, @intFromEnum( Color.Blue ) ) << 8 );
+				i += 2;
+			} else if ( std.mem.startsWith( u8, msg[i..], "36m" ) ) {
+				color = ( color & 0xf000 ) | ( @as( u16, @intFromEnum( Color.LightBlue ) ) << 8 );
+				i += 2;
 			} else if ( std.mem.startsWith( u8, msg[i..], "44m" ) ) {
 				color = ( color & 0x0f00 ) | ( @as( u16, @intFromEnum( Color.Blue ) ) << 12 );
 				i += 2;

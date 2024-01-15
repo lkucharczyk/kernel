@@ -63,7 +63,7 @@ pub fn main() anyerror!void {
 			} else if ( p == 0 and c == 0x04 ) { // ctrl-d
 				write( "\x1b[7m" ++ "^D" ++ "\x1b[0m" ++ "\n" );
 				process( "exit" ) catch {};
-			} else if ( c == 0x08 ) { // \b
+			} else if ( c == 0x08 or c == 0x7f ) { // \b
 				p -|= 1;
 			} else if ( c == '\n' ) {
 				// clear line + move to start
@@ -81,6 +81,9 @@ pub fn main() anyerror!void {
 			} else if ( std.ascii.isPrint( c ) ) {
 				cmdbuf[p] = c;
 				p += 1;
+			// } else {
+			// 	print( "unknown: 0x{x}\n", .{ c } );
+			// 	write( @ptrCast( cmdbuf[0..p] ) );
 			}
 
 			if ( p == cmdbuf.len ) {
@@ -121,7 +124,7 @@ pub const BINARIES_SBASE = [_][:0]const u8{
 
 const BINARIES = [_][:0]const u8{
 	"/bin/sbase-box", "/bin/sbase-box-dynamic", "/bin/sbase-box-static",
-	"/bin/shell",
+	"/bin/ldd", "/bin/shell", "/bin/simplechat", "/bin/simplechat-server",
 	"/lib/libc.so", "/lib/ld-musl-i386.so.1", "/lib/ld-musl-x86.so.1"
 };
 

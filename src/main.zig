@@ -86,11 +86,17 @@ inline fn ktry( val: anytype ) @typeInfo( @TypeOf( val ) ).ErrorUnion.payload {
 export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") noreturn {
 	@import( "./gdt.zig" ).init();
 
-	// enable protected mode
+	// enable protected mode, FPU and SSE
 	asm volatile (
 		\\ movl %%cr0, %%ecx
-		\\ orl $0x01, %%ecx
+		\\ and $0xfff1, %%cx // enable FPU
+		\\ orl $0x01, %%ecx  // enable PM
 		\\ movl %%ecx, %%cr0
+
+		\\ movl %%cr4, %%ecx
+		\\ orl $0x600, %%ecx // enable SSE
+		\\ movl %%ecx, %%cr4
+
 		\\ jmp $0x08, $kmain_pm
 		\\ kmain_pm:
 	);
@@ -109,6 +115,17 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	com.init();
 	if ( com.ports[0] ) |*com0| {
 		logStreams[1] = com0.stream();
+	}
+
+	var testExec: ?[]const u8 = null;
+	if ( mbMagic == multiboot.Info.MAGIC ) {
+		if ( mbInfo.?.getCmdline() ) |cmd| {
+			if ( std.mem.indexOf( u8, cmd, " --test " ) ) |i| {
+				testExec = cmd[( i + 8 )..];
+				logStreams[0] = null;
+				logStreams[1] = null;
+			}
+		}
 	}
 
 	@import( "./idt.zig" ).init();
@@ -223,12 +240,44 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 	kbd.init();
 	log.writeUnsafe( "\n" );
 
-	ktry( @import( "./net.zig" ).init() );
-	ktry( @import( "./drivers/rtl8139.zig" ).init() );
-	log.writeUnsafe( "\n" );
+	if ( testExec == null ) {
+		ktry( @import( "./net.zig" ).init() );
+		ktry( @import( "./drivers/rtl8139.zig" ).init() );
+		log.writeUnsafe( "\n" );
 
-	vfs.printTree( vfs.rootNode, "[RootVFS]", 0 );
-	log.writeUnsafe( "\n" );
+		vfs.printTree( vfs.rootNode, "[RootVFS]", 0 );
+		log.writeUnsafe( "\n" );
+	}
+
+	if ( testExec ) |cmd| {
+		var iter = std.mem.splitScalar( u8, cmd, ' ' );
+
+		const path = iter.next().?;
+		if ( vfs.rootNode.resolveDeep( path[1..] ) ) |node| {
+			var elf: *vfs.FileDescriptor = ktry( node.open() );
+			defer elf.close();
+
+			var args = std.ArrayList( [*:0]const u8 ).init( kheap );
+			while ( iter.next() ) |arg| {
+				ktry( args.append( ktry( kheap.dupeZ( u8, arg ) ) ) );
+			}
+
+			_ = ktry( task.createElf(
+				elf.reader(),
+				elf.seekableStream(),
+				ktry( kheap.dupeZ( u8, path ) ),
+				.{ args.items, &.{} }
+			) );
+		} else {
+			log.streams[0] = com.ports[0].?.stream();
+			std.debug.panic( "Missing test init elf: \"{s}\"", .{ path } );
+		}
+
+		arch.enableInterrupts();
+		task.schedule();
+
+		arch.out( u16, 0x0604, 0x2000 );
+	}
 
 	if ( vfs.rootNode.resolveDeep( "bin/shell" ) ) |node| {
 		var elf: *vfs.FileDescriptor = ktry( node.open() );
@@ -237,15 +286,21 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 		inline for ( 0..com.ports.len ) |i| {
 			if ( com.ports[i] ) |_| {
 				const path = std.fmt.comptimePrint( "/dev/com{}", .{ i } );
-				const st = ktry( task.createElf( elf.reader(), elf.seekableStream(), .{ &.{ "/bin/shell", path, path }, &.{} } ) );
-				st.bin = ktry( kheap.dupeZ( u8, "/bin/shell" ) );
+				_ = ktry( task.createElf(
+					elf.reader(),
+					elf.seekableStream(),
+					"/bin/shell",
+					.{ &.{ "/bin/shell", path, path }, &.{} }
+				) );
 			}
 		}
 
-		{
-			const st = ktry( task.createElf( elf.reader(), elf.seekableStream(), .{ &.{ "/bin/shell", "/dev/kbd0", "/dev/tty0" }, &.{} } ) );
-			st.bin = ktry( kheap.dupeZ( u8, "/bin/shell" ) );
-		}
+		_ = ktry( task.createElf(
+			elf.reader(),
+			elf.seekableStream(),
+			"/bin/shell",
+			.{ &.{ "/bin/shell", "/dev/kbd0", "/dev/tty0" }, &.{} }
+		) );
 	}
 
 	arch.enableInterrupts();

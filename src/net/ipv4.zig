@@ -182,12 +182,12 @@ pub fn recv( _: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 
 var sendId: u16 = 0;
 pub fn send( protocol: Protocol, sockaddr: net.sockaddr.Ipv4, body: net.util.NetBody ) error{ NoRouteToHost }!void {
-	var interface: *const net.Interface = route( sockaddr.address ) orelse return error.NoRouteToHost;
+	var target = route( sockaddr.address ) orelse return error.NoRouteToHost;
 
 	var packet = Packet {
 		.header = .{
 			.protocol = protocol,
-			.srcAddr = interface.ipv4Route.?.srcAddress,
+			.srcAddr = target[0].ipv4Route.?.srcAddress,
 			.dstAddr = sockaddr.address,
 			.id = sendId
 		},
@@ -197,20 +197,24 @@ pub fn send( protocol: Protocol, sockaddr: net.sockaddr.Ipv4, body: net.util.Net
 	sendId +%= 1;
 	packet.hton();
 
-	// TODO: add ARP resolution
-	interface.send(
-		net.ethernet.Address.Broadcast,
+	target[0].send(
+		target[1],
 		net.ethernet.EtherType.Ipv4,
 		packet.toHwBody()
 	);
 }
 
 // TODO: add proper multi-address routing
-pub fn route( addr: Address ) ?*const net.Interface {
+// TODO: add ARP resolution
+pub fn route( addr: Address ) ?struct{ *net.Interface, net.ethernet.Address } {
 	for ( net.interfaces.items ) |*interface| {
 		if ( interface.ipv4Route ) |iproute| {
 			if ( iproute.match( addr ) ) {
-				return interface;
+				if ( iproute.srcAddress.val == addr.val ) {
+					return .{ interface, interface.device.hwAddr };
+				}
+
+				return .{ interface, net.ethernet.Address.Broadcast };
 			}
 		}
 	}

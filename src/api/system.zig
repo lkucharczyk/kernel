@@ -8,10 +8,17 @@ pub const STDERR_FILENO = std.os.linux.STDERR_FILENO;
 
 pub const E = std.os.linux.E;
 pub const SEEK = std.os.linux.SEEK;
+
 pub const fd_t = std.os.linux.fd_t;
 pub const ino_t = std.os.linux.ino_t;
 pub const mode_t = std.os.linux.mode_t;
+pub const time_t = i64;
+
 pub const sockaddr = std.os.linux.sockaddr;
+pub const timeval = extern struct {
+	tv_sec: time_t,
+	tv_usec: i32
+};
 
 pub const getErrno = std.os.linux.getErrno;
 

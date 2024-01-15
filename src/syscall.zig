@@ -123,10 +123,10 @@ pub fn handlerWrapper( id: Syscall, args: [6]usize, state: ?*x86.State ) isize {
 
 	if ( handler( id, args, state, strace ) ) |val| {
 		if ( strace ) {
-			if ( val < 0x10000 ) {
+			if ( val < 0x100 and val >= -1024 ) {
 				root.log.printUnsafe( ") => {}\n", .{ val } );
 			} else {
-				root.log.printUnsafe( ") => 0x{x}\n", .{ val } );
+				root.log.printUnsafe( ") => 0x{x}\n", .{ @as( usize, @bitCast( val ) ) } );
 			}
 		}
 
@@ -258,17 +258,18 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 				} );
 			}
 
-			if (
-				args[1] == 0
-				or ( args[2] & ~@as( usize, std.os.linux.PROT.READ | std.os.linux.PROT.WRITE | std.os.linux.PROT.EXEC ) ) != 0
-			) {
+			if ( args[1] == 0 ) {
+				break :_ task.Error.InvalidArgument;
+			}
+
+			if ( ( args[2] & ~@as( usize, std.os.linux.PROT.READ | std.os.linux.PROT.WRITE | std.os.linux.PROT.EXEC ) ) != 0 ) {
 				break :_ task.Error.NotImplemented;
 			}
 
 			var addr: usize = args[0];
 			if ( addr == 0 ) {
 				addr = std.mem.alignForward( usize, task.currentTask.programBreak, 4096 );
-				_ = try handler( .Brk, .{ task.currentTask.programBreak + args[1], 0, 0, 0, 0, 0 }, state, true );
+				_ = try handler( .Brk, .{ task.currentTask.programBreak + args[1], 0, 0, 0, 0, 0 }, state, false );
 			} else {
 				task.currentTask.programBreak = @max( task.currentTask.programBreak, addr + args[1] );
 				if ( try task.currentTask.mmap.alloc( addr, args[1] ) ) {
@@ -541,7 +542,7 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 		.Link => @import( "./syscall/vfs.zig" ).link( args, state, strace ),
 		.Unlink => @import( "./syscall/vfs.zig" ).unlink( args, state, strace ),
 		.GetTimeOfDay => _: {
-			const tv = try util.extractPtr( std.os.linux.timeval, args[0] );
+			const tv = try util.extractPtr( std.os.timeval, args[0] );
 			const tz = try util.extractOptionalPtr( std.os.linux.timezone, args[1] );
 
 			if ( strace ) {
@@ -553,7 +554,7 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 			}
 
 			tv.tv_sec = @import( "./rtc.zig" ).getEpoch();
-			tv.tv_usec = tv.tv_sec *% 1000;
+			tv.tv_usec = 0;
 
 			break :_ 0;
 		},
@@ -567,7 +568,13 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 				break :_ task.Error.InvalidArgument;
 			}
 
-			if ( ud.flags.seg_32bit == 0 or @as( isize, @bitCast( ud.entry_number ) ) != -1 ) {
+			if (
+				ud.flags.seg_32bit == 0
+				or (
+					@as( isize, @bitCast( ud.entry_number ) ) != -1
+					and @as( isize, @bitCast( ud.entry_number ) ) != ( gdt.Segment.TLS >> 3 )
+				)
+			) {
 				break :_ task.Error.NotImplemented;
 			}
 

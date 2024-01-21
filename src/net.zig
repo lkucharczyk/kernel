@@ -30,7 +30,7 @@ pub var netTask: *task.Task = undefined;
 var pollfd: std.ArrayListUnmanaged( task.PollFd ) = undefined;
 var subtasks: std.ArrayListUnmanaged( *const fn( *task.PollFd ) void ) = undefined;
 
-pub var loEthernet: loopback.Ethernet = undefined;
+var loEthernet: loopback.Ethernet = undefined;
 
 pub fn createInterface( device: Device ) *Interface {
 	var ptr = interfaces.addOne( root.kheap ) catch unreachable;
@@ -80,6 +80,7 @@ pub fn init() std.mem.Allocator.Error!void {
 	subtasks = try std.ArrayListUnmanaged( *const fn( *task.PollFd ) void ).initCapacity( root.kheap, 8 );
 	sockets = std.heap.MemoryPoolExtra( Socket, .{} ).init( root.kheap );
 
+	try ipv4.init();
 	loEthernet.init();
 	netTask = task.create( daemon, true );
 }

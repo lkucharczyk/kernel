@@ -47,7 +47,7 @@ void handleStdin( char* buf ) {
 		sysmsgf( "Available users (%u):", len );
 		for ( size_t i = 0; i < CLIENTS_LEN; i++ ) {
 			if ( clients[i].active ) {
-				sysmsgf( " - %lu: " ANSI_COLOR_CYAN "@%s", i, clients[i].nickname );
+				sysmsgf( " - %lu: " ANSI_COLOR_CYAN "@%s " ANSI_RESET " (%s:%i)", i, clients[i].nickname, inet_ntoa( clients[i].addr.sin_addr ), ntohs( clients[i].addr.sin_port ) );
 			}
 		}
 	}

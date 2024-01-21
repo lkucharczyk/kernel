@@ -22,6 +22,7 @@ pub const Interface = struct {
 	rxQueue: RingBuffer( *align(2) ethernet.FrameOpaque, 8 ),
 
 	ipv4Route: ?ipv4.Route = null,
+	ipv4Neighbours: std.AutoHashMap( net.ipv4.Address, net.ethernet.Address ),
 
 	pub fn init( self: *Interface, allocator: std.mem.Allocator ) void {
 		self.arena = std.heap.ArenaAllocator.init( allocator );
@@ -35,6 +36,7 @@ pub const Interface = struct {
 			.dstMask = ipv4.Mask.init( 24 ),
 			.viaAddress = ipv4.Address.init( .{ 192, 168, subnet, 1 } )
 		};
+		self.ipv4Neighbours = std.AutoHashMap( net.ipv4.Address, net.ethernet.Address ).init( allocator );
 		subnet += 1;
 
 		self.fsNode.init( subnet - 101, .Unknown, self, .{ .ioctl = &ioctl } );
@@ -99,9 +101,28 @@ pub const Interface = struct {
 		const self: *Interface = @alignCast( @ptrCast( node.ctx ) );
 
 		if ( cmd == 0 ) {
+			if ( arg == 0 ) {
+				const stderr = try task.currentTask.getFd( 2 );
+				const writer = std.io.Writer( *vfs.FileDescriptor, anyerror, vfs.FileDescriptor.write ) { .context = stderr };
+
+				writer.print( "Ethernet:\n Address: {}\n", .{ self.device.hwAddr } ) catch {};
+				writer.print( "\nIPv4:\n Route: {?}\n Neighbours:\n", .{ self.ipv4Route } ) catch {};
+				if ( self.ipv4Neighbours.count() > 0 ) {
+					var iter = self.ipv4Neighbours.iterator();
+					while ( iter.next() ) |entry| {
+						writer.print( "  - {} -> {}\n", .{ entry.key_ptr, entry.value_ptr } ) catch {};
+					}
+				} else {
+					_ = writer.write( "  <none>\n" ) catch {};
+				}
+
+				return 0;
+			}
+
 			const ptr: *align(1) ipv4.Route = @ptrFromInt( arg );
 			if ( ptr.srcAddress.val == 0 ) {
 				if ( self.ipv4Route ) |route| {
+					self.ipv4Neighbours.clearAndFree();
 					ptr.* = route;
 				}
 			} else {

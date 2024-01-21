@@ -31,6 +31,20 @@ pub fn Body( comptime N: comptime_int ) type {
 				}
 			}
 		}
+
+		pub fn copyToPartial( self: @This(), dest: []u8, offset: usize ) void {
+			var pos: usize = 0;
+			for ( self.parts ) |mpart| {
+				if ( mpart ) |part| {
+					if ( pos + part.len > offset and pos < offset + dest.len ) {
+						const start = @max( pos, offset );
+						const end = @min( pos + part.len, offset + dest.len );
+						@memcpy( dest[( start - offset )..( end - offset )], part[( start - pos )..( end - pos )] );
+					}
+					pos += part.len;
+				}
+			}
+		}
 	};
 }
 

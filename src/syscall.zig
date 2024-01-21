@@ -407,7 +407,7 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 			);
 
 			if ( strace ) {
-				root.log.printUnsafe( " {}, \"{s}\", {}, {} ", .{ args[0], buf, args[3], sockaddr } );
+				root.log.printUnsafe( " {}, [0x{x}]u8@0x{x}, {}, {} ", .{ args[0], buf.len, args[1], args[3], sockaddr } );
 			}
 
 			const fd = try task.currentTask.getFd( args[0] );

@@ -178,7 +178,7 @@ fn process( cmd: []const u8 ) OsError!void {
 
 			var src: net.sockaddr.Ipv4 = undefined;
 			var srclen: u32 = @sizeOf( @TypeOf( src ) );
-			var buf: [0x600]u8 = undefined;
+			var buf: [0xffff]u8 = undefined;
 
 			const addr = linux.sockaddr.in {
 				.addr = 0,
@@ -211,7 +211,7 @@ fn process( cmd: []const u8 ) OsError!void {
 
 			var src: net.sockaddr.Ipv4 = undefined;
 			var srclen: u32 = @sizeOf( @TypeOf( src ) );
-			var buf: [0x600]u8 = undefined;
+			var buf: [0xffff]u8 = undefined;
 
 			var out: usize = linux.poll( &fds, fdlen, -1 );
 			while ( out > 0 ) : ( out = linux.poll( &fds, fdlen, -1 ) ) {
@@ -238,6 +238,24 @@ fn process( cmd: []const u8 ) OsError!void {
 
 			_ = try h( linux.sendto( sock, buf.ptr, buf.len, 0, @ptrCast( &dst.sa ), @sizeOf( linux.sockaddr.in ) ) );
 			_ = try h( linux.close( sock ) );
+		} else if ( std.mem.eql( u8, cmd0, "sendudpfile" ) ) {
+			var dst = std.net.Ip4Address.parse(
+				iter.next() orelse return,
+				std.fmt.parseInt( u16, iter.next() orelse return, 0 ) catch return
+			) catch return;
+			const path = try alloc.dupeZ( u8, iter.next() orelse return );
+			defer alloc.free( path );
+
+			const fd: i32 = @bitCast( try h( system.open( path, linux.O.RDONLY, 0 ) ) );
+			defer _ = linux.close( fd );
+
+			var buf: [0xffff]u8 = undefined;
+			const len = try h( system.read( fd, &buf, buf.len ) );
+
+			const sock: i32 = @bitCast( try h( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) ) );
+			defer _ = linux.close( sock );
+
+			_ = try h( linux.sendto( sock, &buf, len, 0, @ptrCast( &dst.sa ), @sizeOf( linux.sockaddr.in ) ) );
 		} else if ( std.mem.eql( u8, cmd0, "ipaddr" ) ) {
 			const path = try alloc.dupeZ( u8, iter.next() orelse return );
 			defer alloc.free( path );
@@ -268,6 +286,14 @@ fn process( cmd: []const u8 ) OsError!void {
 			} else {
 				print( "{}\n", .{ route } );
 			}
+		} else if ( std.mem.eql( u8, cmd0, "ipdbg" ) ) {
+			const path = try alloc.dupeZ( u8, iter.next() orelse return );
+			defer alloc.free( path );
+
+			const fd: i32 = @bitCast( try h( system.open( path, 0, 0 ) ) );
+			defer _ = system.close( fd );
+
+			_ = try h( system.ioctl( fd, 0, 0 ) );
 		} else if ( extractBin( cmd0 ) ) |bin| {
 			var arena = std.heap.ArenaAllocator.init( alloc );
 			const aalloc = arena.allocator();

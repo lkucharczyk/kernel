@@ -1,9 +1,6 @@
 const std = @import( "std" );
 const root = @import( "root" );
-const ethernet = @import( "./ethernet.zig" );
-const ipv4 = @import( "./ipv4.zig" );
 const net = @import( "../net.zig" );
-const netUtil = @import( "./util.zig" );
 
 const isLe = @import( "builtin" ).cpu.arch.endian() == .little;
 
@@ -20,7 +17,7 @@ pub const OpCode = enum(u16) {
 
 pub const Header = packed struct {
 	hwType: HwType = .Ethernet,
-	proto: ethernet.EtherType = .Ipv4,
+	proto: net.ethernet.EtherType = .Ipv4,
 	hwAddrLen: u8 = 6,
 	protoAddrLen: u8 = 4,
 	opCode: OpCode = OpCode.Request,
@@ -39,10 +36,10 @@ pub const Header = packed struct {
 
 pub const Body = extern struct {
 	pub const EthIpv4 = extern struct {
-		srcHwAddr: ethernet.Address,
-		srcProtoAddr: ipv4.Address align(1),
-		dstHwAddr: ethernet.Address align(1),
-		dstProtoAddr: ipv4.Address align(1),
+		srcHwAddr: net.ethernet.Address,
+		srcProtoAddr: net.ipv4.Address align(1),
+		dstHwAddr: net.ethernet.Address align(1),
+		dstProtoAddr: net.ipv4.Address align(1),
 
 		pub fn format( self: EthIpv4, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) !void {
 			try std.fmt.format( writer, "{s}{{ ( {}, {} ) -> ( {}, ", .{
@@ -52,7 +49,7 @@ pub const Body = extern struct {
 				self.dstProtoAddr
 			} );
 
-			if ( self.dstHwAddr.eq( ethernet.Address.Empty ) or self.dstHwAddr.eq( ethernet.Address.Broadcast ) ) {
+			if ( self.dstHwAddr.eq( net.ethernet.Address.Empty ) or self.dstHwAddr.eq( net.ethernet.Address.Broadcast ) ) {
 				_ = try writer.write( "??:??:??:??:??:?? ) }}" );
 			} else {
 				try std.fmt.format( writer, "{} ) }}", .{ self.dstHwAddr } );
@@ -80,8 +77,8 @@ pub const Packet = extern struct {
 		return @sizeOf( Header ) + self.header.hwAddrLen * 2 + self.header.protoAddrLen * 2;
 	}
 
-	pub inline fn toHwBody( self: *const Packet ) netUtil.HwBody {
-		return netUtil.HwBody.init( @as( [*]const u8, @ptrCast( self ) )[0..self.len()] );
+	pub inline fn toHwBody( self: *const Packet ) net.util.HwBody {
+		return net.util.HwBody.init( @as( [*]const u8, @ptrCast( self ) )[0..self.len()] );
 	}
 
 	pub fn format( self: Packet, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) !void {
@@ -103,12 +100,16 @@ pub fn recv( interface: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 	}
 
 	const packet: *const align(1) Packet = @ptrCast( data );
-
 	if (
-		data.len >= packet.len()
-		and packet.header.opCode == .Request
+		data.len < packet.len()
 		and packet.header.hwType == .Ethernet
 		and packet.header.proto == .Ipv4
+	) {
+		return null;
+	}
+
+	if (
+		packet.header.opCode == .Request
 		and interface.ipv4Route != null
 		and interface.ipv4Route.?.srcAddress.val == packet.body.eth_ipv4.dstProtoAddr.val
 	) {
@@ -126,7 +127,15 @@ pub fn recv( interface: *net.Interface, data: []const u8 ) ?net.EntryL4 {
 			}
 		};
 
+		interface.ipv4Neighbours.put( packet.body.eth_ipv4.srcProtoAddr, packet.body.eth_ipv4.srcHwAddr ) catch {};
 		interface.send( packet.body.eth_ipv4.srcHwAddr, .Arp, response.toHwBody() );
+	} else if (
+		packet.header.opCode == .Response
+		and packet.body.eth_ipv4.dstHwAddr.eq( interface.device.hwAddr )
+		and interface.ipv4Route != null
+		and interface.ipv4Route.?.srcAddress.val == packet.body.eth_ipv4.dstProtoAddr.val
+	) {
+		interface.ipv4Neighbours.put( packet.body.eth_ipv4.srcProtoAddr, packet.body.eth_ipv4.srcHwAddr ) catch {};
 	}
 
 	return null;

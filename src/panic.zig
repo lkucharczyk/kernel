@@ -41,7 +41,7 @@ const MSG_EXCEPTION = [_][]const u8{
 	"unknown (31)"
 };
 
-export const symbolTable: [48 * 1024]u8 align(4096) = .{ 0xde, 0xad, 0xbe, 0xef } ** ( 48 * 256 );
+export const symbolTable: [64 * 1024]u8 align(4096) = .{ 0xde, 0xad, 0xbe, 0xef } ** ( 64 * 256 );
 
 const Symbol = struct {
 	address: usize,

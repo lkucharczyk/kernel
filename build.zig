@@ -69,7 +69,7 @@ pub fn build( b: *std.Build ) !void {
 			++ " | sed -nr 's/^([0-9a-f]+).*?\\t([0-9a-f]+) (.+)$/\\1 \\2 \\3/p'"
 			++ " | sort"
 			// ++ " | tee ./zig-cache/symbolmap.txt"
-			++ " | grep -vP '\\d\\.stub|__'"
+			++ " | grep -vP '\\d\\.stub|__|(Reader.*?){3,}'"
 			++ " | sed -r '"
 				++ "s/\\.\\{\\.[a-z][^}]+\\}/.{ ... }/g;"
 				++ "s/error\\{[^}]+\\}/error{ ... }/g;"
@@ -138,5 +138,6 @@ pub fn build( b: *std.Build ) !void {
 }
 
 comptime {
+	_ = @import( "./src/net/ipv4.zig" );
 	std.testing.refAllDecls( @This() );
 }

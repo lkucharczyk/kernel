@@ -142,7 +142,7 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 		} );
 
 		if ( mbInfo.?.getMemoryMap() ) |mmap| {
-			log.printUnsafe( "mmap:\n", .{} );
+			log.writeUnsafe( "mmap:\n" );
 			for ( mmap ) |entry| {
 				log.printUnsafe( "    - {}\n", .{ entry } );
 			}
@@ -191,9 +191,9 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 			}
 		}
 
-		log.printUnsafe( "\n", .{} );
+		log.writeUnsafe( "\n" );
 	} else {
-		log.printUnsafe( "multiboot: magic invalid!\n\n", .{} );
+		log.writeUnsafe( "multiboot: magic invalid!\n\n" );
 	}
 
 	if ( @import( "./acpi/rsdp.zig" ).init() ) |rsdp| {
@@ -217,15 +217,15 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 					log.printUnsafe( "fadt: {[0]*} {[0]}\n", .{ fadt } );
 				}
 
-				log.printUnsafe( "\n", .{} );
+				log.writeUnsafe( "\n" );
 			} else {
-				log.printUnsafe( "acpi: rsdt validation failed!\n\n", .{} );
+				log.writeUnsafe( "acpi: rsdt validation failed!\n\n" );
 			}
 		} else {
-			log.printUnsafe( "acpi: rsdp validation failed!\n\n", .{} );
+			log.writeUnsafe( "acpi: rsdp validation failed!\n\n" );
 		}
 	} else {
-		log.printUnsafe( "acpi: rsdp missing!\n\n", .{} );
+		log.writeUnsafe( "acpi: rsdp missing!\n\n" );
 	}
 
 	@import( "./pit.zig" ).init( 100 );
@@ -283,6 +283,8 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 		var elf: *vfs.FileDescriptor = ktry( node.open() );
 		defer elf.close();
 
+		const env = .{ "PATH=/bin" };
+
 		inline for ( 0..com.ports.len ) |i| {
 			if ( com.ports[i] ) |_| {
 				const path = std.fmt.comptimePrint( "/dev/com{}", .{ i } );
@@ -290,7 +292,7 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 					elf.reader(),
 					elf.seekableStream(),
 					"/bin/shell",
-					.{ &.{ "/bin/shell", path, path }, &.{} }
+					.{ &.{ "/bin/shell", path, path }, &env }
 				) );
 			}
 		}
@@ -299,7 +301,7 @@ export fn kmain( mbInfo: ?*multiboot.Info, mbMagic: u32 ) linksection(".text") n
 			elf.reader(),
 			elf.seekableStream(),
 			"/bin/shell",
-			.{ &.{ "/bin/shell", "/dev/kbd0", "/dev/tty0" }, &.{} }
+			.{ &.{ "/bin/shell", "/dev/kbd0", "/dev/tty0" }, &env }
 		) );
 	}
 

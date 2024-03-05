@@ -185,7 +185,7 @@ pub fn read( buf: []u8, fd: ?*vfs.FileDescriptor ) usize {
 	return buf.len;
 }
 
-pub fn fsRead( _: ?*vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) u32 {
+pub fn fsRead( _: ?*vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) error{}!u32 {
 	return read( buf, fd );
 }
 

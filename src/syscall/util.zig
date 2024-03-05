@@ -51,3 +51,12 @@ pub fn extractSliceZ( comptime T: type, comptime S: T, ptr: usize ) error{ Inval
 pub inline fn extractCStr( ptr: usize ) error{ InvalidPointer }![:0]const u8 {
 	return extractSliceZ( u8, 0, ptr );
 }
+
+pub fn extractPath( ptr: usize ) task.Error![:0]const u8 {
+	const path = try extractCStr( ptr );
+	if ( path.len == 0 or path[0] != '/' ) {
+		return task.Error.MissingFile;
+	}
+
+	return path[1..];
+}

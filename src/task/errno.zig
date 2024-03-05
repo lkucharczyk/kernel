@@ -13,8 +13,10 @@ pub const Error = error {
 	NotDirectory,
 	IsDirectory,
 	InvalidArgument,
+	OutOfRange,
 	NotImplemented,
 	NotSocket,
+	MissingDestinationAddress,
 	ProtocolNotSupported,
 	AddressFamilyNotSupported,
 	AddressInUse,
@@ -47,10 +49,14 @@ pub const Errno = enum(i16) {
 	IsDirectory               = 21,
 	/// EINVAL
 	InvalidArgument           = 22,
+	/// ERANGE
+	OutOfRange                = 34,
 	/// ENOSYS
 	NotImplemented            = 38,
 	/// ENOTSOCK
 	NotSocket                 = 88,
+	/// EDESTADDRREQ
+	MissingDestinationAddress = 89,
 	/// EPROTONOSUPPORT
 	ProtocolNotSupported      = 93,
 	/// EAFNOSUPPORT
@@ -74,8 +80,10 @@ pub const Errno = enum(i16) {
 			Error.NotDirectory              => .NotDirectory,
 			Error.IsDirectory               => .IsDirectory,
 			Error.InvalidArgument           => .InvalidArgument,
+			Error.OutOfRange                => .OutOfRange,
 			Error.NotImplemented            => .NotImplemented,
 			Error.NotSocket                 => .NotSocket,
+			Error.MissingDestinationAddress => .MissingDestinationAddress,
 			Error.ProtocolNotSupported      => .ProtocolNotSupported,
 			Error.AddressFamilyNotSupported => .AddressFamilyNotSupported,
 			Error.AddressInUse              => .AddressInUse,

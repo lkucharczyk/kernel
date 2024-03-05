@@ -23,6 +23,8 @@ pub const timeval = extern struct {
 pub const getErrno = std.os.linux.getErrno;
 
 pub const close = std.os.linux.close;
+pub const dup = std.os.linux.dup;
+pub const dup2 = std.os.linux.dup2;
 pub const execve = std.os.linux.execve;
 pub const exit = std.os.linux.exit;
 pub const getpid = std.os.linux.getpid;
@@ -30,6 +32,7 @@ pub const fork = std.os.linux.fork;
 pub const ioctl = std.os.linux.ioctl;
 pub const open = std.os.linux.open;
 pub const read = std.os.linux.read;
+pub const statx = std.os.linux.statx;
 pub const vfork = std.os.linux.vfork;
 pub const write = std.os.linux.write;
 

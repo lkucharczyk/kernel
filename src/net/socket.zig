@@ -36,6 +36,8 @@ pub const Socket = struct {
 	address: net.Sockaddr align(4),
 	node: vfs.Node = undefined,
 
+	dest: ?net.Sockaddr align(4),
+
 	arena: std.heap.ArenaAllocator,
 	alloc: std.mem.Allocator,
 	rxQueue: Queue( Message ),
@@ -49,8 +51,9 @@ pub const Socket = struct {
 
 		self.address = .{ .ipv4 = .{} };
 		self.node.init( 1, .Socket, self, .{
-			.close = &deinit,
-			.read = &read
+			.close = &close,
+			.read = &read,
+			.write = &write
 		} );
 
 		switch ( self.protocol ) {
@@ -61,9 +64,7 @@ pub const Socket = struct {
 		}
 	}
 
-	pub fn deinit( node: *vfs.Node ) void {
-		var self: *Socket = @alignCast( @ptrCast( node.ctx ) );
-
+	pub fn deinit( self: *Socket ) void {
 		if ( self.vtable.close ) |f| {
 			f( self );
 		}
@@ -72,6 +73,14 @@ pub const Socket = struct {
 		self.rxQueue.deinit();
 
 		net.destroySocket( self );
+	}
+
+	fn close( node: *vfs.Node ) void {
+		var self: *Socket = @alignCast( @ptrCast( node.ctx ) );
+
+		if ( node.descriptors.items.len == 1 ) {
+			self.deinit();
+		}
 	}
 
 	pub fn bind( self: *Socket, addr: net.Sockaddr ) error{ AddressInUse, InvalidArgument }!void {
@@ -99,7 +108,7 @@ pub const Socket = struct {
 		}
 	}
 
-	pub fn read( node: *vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) u32 {
+	pub fn read( node: *vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) task.Error!u32 {
 		var self: *Socket = @alignCast( @ptrCast( node.ctx ) );
 		const msg = self.recvfrom( fd );
 
@@ -130,7 +139,17 @@ pub const Socket = struct {
 		}
 	}
 
-	pub fn sendto( self: *Socket, addr: net.Sockaddr, buf: []const u8 ) error{ InvalidArgument, NoRouteToHost }!isize {
+	pub fn write( node: *vfs.Node, _: *vfs.FileDescriptor, buf: []const u8  ) task.Error!usize {
+		var self: *Socket = @alignCast( @ptrCast( node.ctx ) );
+
+		if ( self.dest ) |dest| {
+			return self.sendto( dest, buf );
+		}
+
+		return @bitCast( task.Errno.MissingDestinationAddress.getResult() );
+	}
+
+	pub fn sendto( self: *Socket, addr: net.Sockaddr, buf: []const u8 ) error{ InvalidArgument, NoRouteToHost }!usize {
 		if ( addr.unknown.family != self.family ) {
 			return task.Error.InvalidArgument;
 		}
@@ -141,5 +160,13 @@ pub const Socket = struct {
 		} else {
 			return task.Error.InvalidArgument;
 		}
+	}
+
+	pub fn connect( self: *Socket, addr: net.Sockaddr ) task.Error!void {
+		if ( addr.unknown.family != self.family ) {
+			return task.Error.InvalidArgument;
+		}
+
+		self.dest = addr;
 	}
 };

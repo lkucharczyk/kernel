@@ -283,16 +283,16 @@ pub const Task = struct {
 		unreachable;
 	}
 
-	pub fn addFd( self: *Task, node: *vfs.Node ) error{ OutOfMemory }!isize {
+	pub fn addFd( self: *Task, ptr: *vfs.FileDescriptor ) error{ OutOfMemory }!u32 {
 		for ( self.fd.items, 0.. ) |*fd, i| {
 			if ( fd.* == null ) {
-				fd.* = try node.open();
+				fd.* = ptr;
 				return @bitCast( i );
 			}
 		}
 
-		( try self.fd.addOne( root.kheap ) ).* = try node.open();
-		return @bitCast( self.fd.items.len - 1 );
+		( try self.fd.addOne( root.kheap ) ).* = ptr;
+		return self.fd.items.len - 1;
 	}
 
 	pub fn getFd( self: *Task, fd: u32 ) error{ BadFileDescriptor }!*vfs.FileDescriptor {
@@ -351,7 +351,7 @@ pub const Task = struct {
 		for ( segments ) |segment| {
 			if ( segment.p_memsz > 0 and segment.p_type == std.elf.PT_LOAD ) {
 				const ptr = @as( [*]allowzero u8, @ptrFromInt( segment.p_vaddr + offset ) )[0..segment.p_filesz];
-				self.programBreak = std.mem.alignForward( usize, @max( self.programBreak, @intFromPtr( ptr.ptr + ptr.len ) ), 4096 );
+				self.programBreak = std.mem.alignForward( usize, @max( self.programBreak, @intFromPtr( ptr.ptr + segment.p_memsz ) ), 4096 );
 
 				if ( try self.mmap.alloc( @intFromPtr( ptr.ptr ), ptr.len ) ) {
 					self.mmap.map();
@@ -403,61 +403,76 @@ pub const Task = struct {
 		const ustack = @as( [*]usize, @ptrFromInt( mem.ADDR_KMAIN_OFFSET - mem.PAGE_SIZE ) )[0..( mem.PAGE_SIZE / @sizeOf( usize ) )];
 		@memset( ustack, 0 );
 
+		// env, argv - data
+		const argsPtr = try alloc.alloc( usize, args[0].len + args[1].len + 2 );
+		{
+			var i: usize = 0;
+			inline for ( .{ args[0], args[1] } ) |arg| {
+				for ( arg ) |val| {
+					const len = std.mem.len( val ) + 1;
+					self.pushBytesToUstack( val[0..len] );
+					argsPtr[i] = self.stackBreak;
+					i += 1;
+				}
+
+				argsPtr[i] = 0;
+				i += 1;
+			}
+		}
+
 		// auxv
-		self.pushToUstack( 0 );
-		self.pushToUstack( std.elf.AT_NULL );
-		self.pushToUstack( 4096 );
-		self.pushToUstack( std.elf.AT_PAGESZ );
+		self.pushSliceToUstack( &.{
+			std.elf.AT_PAGESZ, mem.PAGE_SIZE,
+			std.elf.AT_NULL  , 0
+		} );
 
 		if ( curElf.header.e_type == .DYN ) {
-			self.pushToUstack( curElf.header.e_phnum + offset );
-			self.pushToUstack( std.elf.AT_PHNUM );
-			self.pushToUstack( curElf.header.e_phentsize + offset );
-			self.pushToUstack( std.elf.AT_PHENT );
-			self.pushToUstack( curElf.header.e_phoff + offset );
-			self.pushToUstack( std.elf.AT_PHDR );
-			self.pushToUstack( offset );
-			self.pushToUstack( std.elf.AT_BASE );
+			self.pushSliceToUstack( &.{
+				std.elf.AT_BASE , offset,
+				std.elf.AT_PHDR , curElf.header.e_phoff + offset,
+				std.elf.AT_PHENT, curElf.header.e_phentsize + offset,
+				std.elf.AT_PHNUM, curElf.header.e_phnum + offset
+			} );
 		}
 
 		self.pushToUstack( @intFromPtr( self.entrypoint ) );
 		self.pushToUstack( std.elf.AT_ENTRY );
 
-		// env, argv
-		const dataAddr = std.mem.alignForward( usize, self.programBreak, 4096 );
-		const dataPtr: [*]u8 = @ptrFromInt( dataAddr );
-		var dataOff: usize = 0;
-		inline for ( .{ args[1], args[0] } ) |arg| {
-			self.pushToUstack( 0 );
-			for ( 1..( arg.len + 1 ) ) |i| {
-				self.pushToUstack( dataAddr + dataOff );
-
-				const len = std.mem.len( arg[arg.len - i] ) + 1;
-				@memcpy( dataPtr[dataOff..], arg[arg.len - i][0..len] );
-				dataOff += len;
-			}
-		}
-
+		// env, argv - pointers
+		self.pushSliceToUstack( argsPtr );
 		self.pushToUstack( args[0].len );
+
 		if ( curElf.header.e_type == .DYN ) {
 			self.programBreak = mem.PAGE_SIZE;
-		} else {
-			self.programBreak = std.mem.alignForward( usize, dataAddr + dataOff, 4096 );
 		}
 
 		self.mmap.unmap();
 	}
 
 	fn pushToKstack( self: *Task, val: usize ) void {
-		const ptr: *usize = @ptrFromInt( self.stackPtr.esp - @sizeOf( usize ) );
-		ptr.* = val;
-		self.stackPtr.esp = @intFromPtr( ptr );
+		self.stackPtr.esp -= @sizeOf( usize );
+		@as( *usize, @ptrFromInt( self.stackPtr.esp ) ).* = val;
 	}
 
 	fn pushToUstack( self: *Task, val: usize ) void {
-		const ptr: *usize = @ptrFromInt( self.stackBreak - @sizeOf( usize ) );
-		ptr.* = val;
-		self.stackBreak = @intFromPtr( ptr );
+		self.stackBreak -= @sizeOf( usize );
+		@as( *usize, @ptrFromInt( self.stackBreak ) ).* = val;
+	}
+
+	fn pushBytesToUstack( self: *Task, slice: []const u8 ) void {
+		const len = std.mem.alignForward( usize, slice.len, @sizeOf( usize ) );
+		self.stackBreak -= len * @sizeOf( u8 );
+
+		const ptr: []u8 = @as( [*]u8, @ptrFromInt( self.stackBreak ) )[0..len];
+		@memcpy( ptr[0..slice.len], slice );
+		if ( len > slice.len ) {
+			@memset( ptr[slice.len..len], 0 );
+		}
+	}
+
+	fn pushSliceToUstack( self: *Task, slice: []const usize ) void {
+		self.stackBreak -= slice.len * @sizeOf( usize );
+		@memcpy( @as( [*]usize, @ptrFromInt( self.stackBreak ) )[0..slice.len], slice );
 	}
 };
 

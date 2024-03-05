@@ -9,7 +9,7 @@ fn osWrite( fd: i32, buf: []const u8 ) error{}!usize {
 
 pub fn openDwarfInfo( path: [*:0]const u8, alloc: std.mem.Allocator ) !elf.DwarfInfo {
 	var info = _: {
-		const fd: i32 = @bitCast( system.open( path, std.os.linux.O.RDONLY, 0 ) );
+		const fd: i32 = @bitCast( system.open( path, .{ .ACCMODE = .RDONLY }, 0 ) );
 		if ( fd < 0 ) {
 			return @import( "../task.zig" ).Error.MissingFile;
 		}

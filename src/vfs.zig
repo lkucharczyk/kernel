@@ -8,16 +8,25 @@ pub const VTable = struct {
 	open:    ?*const fn( node: *Node, fd: *FileDescriptor ) void = null,
 	close:   ?*const fn( node: *Node ) void = null,
 	ioctl:   ?*const fn( node: *Node, fd: *FileDescriptor, cmd: u32, arg: usize ) task.Error!i32 = null,
+	stat:    ?*const fn( node: *Node, req: Stat.Request ) task.Error!Stat = null,
 
 	// NodeType.File
-	read:    ?*const fn( node: *Node, fd: *FileDescriptor, buf: []u8 ) u32 = null,
-	write:   ?*const fn( node: *Node, fd: *FileDescriptor, buf: []const u8 ) u32 = null,
+	read:    ?*const fn( node: *Node, fd: *FileDescriptor, buf: []u8 ) task.Error!u32 = null,
+	write:   ?*const fn( node: *Node, fd: *FileDescriptor, buf: []const u8 ) task.Error!u32 = null,
 
 	// NodeType.Directory
 	link:    ?*const fn( node: *Node, target: *Node, name: []const u8 ) std.mem.Allocator.Error!void = null,
 	unlink:  ?*const fn( node: *Node, target: *const Link ) error{ MissingFile }!void = null,
 	mkdir:   ?*const fn( node: *Node, name: []const u8 ) std.mem.Allocator.Error!*Node = null,
 	readdir: ?*const fn( node: *Node ) []const Link = null
+};
+
+pub const Stat = struct {
+	pub const Request = struct {
+		size: bool
+	};
+
+	size: ?u64
 };
 
 pub const Link = struct {
@@ -93,6 +102,14 @@ pub const Node = struct {
 				}
 			}
 		}
+	}
+
+	pub inline fn stat( self: *Node, req: Stat.Request ) task.Error!Stat {
+		if ( self.vtable.stat ) |f| {
+			return f( self, req );
+		}
+
+		return task.Error.NotImplemented;
 	}
 
 	pub fn link( self: *Node, target: *Node, name: []const u8 ) error{ PermissionDenied, NotDirectory, OutOfMemory }!void {
@@ -216,28 +233,28 @@ pub const FileDescriptor = struct {
 		self.node.close( self );
 	}
 
-	pub fn read( self: *FileDescriptor, buf: []u8 ) error{ BadFileDescriptor, IsDirectory }!u32 {
+	pub fn read( self: *FileDescriptor, buf: []u8 ) task.Error!u32 {
 		if ( self.node.vtable.read ) |f| {
 			return f( self.node, self, buf );
 		}
 
 		if ( self.node.ntype == .Directory ) {
-			return error.IsDirectory;
+			return task.Error.IsDirectory;
 		}
 
-		return error.BadFileDescriptor;
+		return task.Error.BadFileDescriptor;
 	}
 
-	pub fn write( self: *FileDescriptor, buf: []const u8 ) error{ BadFileDescriptor, IsDirectory }!u32 {
+	pub fn write( self: *FileDescriptor, buf: []const u8 ) task.Error!u32 {
 		if ( self.node.vtable.write ) |f| {
 			return f( self.node, self, buf );
 		}
 
 		if ( self.node.ntype == .Directory ) {
-			return error.IsDirectory;
+			return task.Error.IsDirectory;
 		}
 
-		return error.BadFileDescriptor;
+		return task.Error.BadFileDescriptor;
 	}
 
 	pub fn getEndPos( self: *FileDescriptor ) error{}!u64 {

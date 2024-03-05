@@ -27,8 +27,11 @@ pub const Syscall = enum(u32) {
 	Brk           = .{  12,  45 }[archId],
 	IoCtl         = .{  16,  54 }[archId],
 	WriteV        = .{  20, 146 }[archId],
+	Dup           = .{  32,  41 }[archId],
+	Dup2          = .{  33,  63 }[archId],
 	GetPid        = .{  39,  20 }[archId],
 	Socket        = .{  41, 359 }[archId],
+	Connect       = .{  42, 362 }[archId],
 	SendTo        = .{  44, 369 }[archId],
 	RecvFrom      = .{  45, 371 }[archId],
 	Bind          = .{  49, 361 }[archId],
@@ -68,23 +71,46 @@ fn handlerIrq( state: *x86.State ) void {
 			var argId: Syscall = undefined;
 
 			switch ( state.ebx ) {
-				1 => {
+				std.os.linux.SC.socket => {
 					argCount = 3;
 					argId = Syscall.Socket;
 				},
-				2 => {
+				std.os.linux.SC.bind => {
 					argCount = 3;
 					argId = Syscall.Bind;
 				},
-				11 => {
+				std.os.linux.SC.connect => {
+					argCount = 3;
+					argId = Syscall.Connect;
+				},
+				std.os.linux.SC.send => {
+					args[4] = 0;
+					args[5] = 0;
+					argCount = 4;
+					argId = Syscall.SendTo;
+				},
+				std.os.linux.SC.recv => {
+					args[4] = 0;
+					args[5] = 0;
+					argCount = 4;
+					argId = Syscall.RecvFrom;
+				},
+				std.os.linux.SC.sendto => {
 					argCount = 6;
 					argId = Syscall.SendTo;
 				},
-				12 => {
+				std.os.linux.SC.recvfrom => {
 					argCount = 6;
 					argId = Syscall.RecvFrom;
 				},
-				else => return
+				else => {
+					root.log.printUnsafe(
+						"syscall: task:{} SocketCall:{}() => {}\n",
+						.{ task.currentTask.id, state.ebx, task.Errno.NotImplemented }
+					);
+					state.eax = @bitCast( task.Errno.NotImplemented.getResult() );
+					return;
+				}
 			}
 
 			for ( 0..argCount ) |i| {
@@ -168,17 +194,22 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 		},
 		// open( pathPtr, flags, mode )
 		.Open => _: {
-			const path = ( try util.extractCStr( args[0] ) )[1..];
+			const path = try util.extractPath( args[0] );
+			const flags: std.os.linux.O = @bitCast( args[1] );
+
 			if ( strace ) {
-				root.log.printUnsafe( " \"/{s}\", O{{ {} }}, 0o{o} ", .{
+				root.log.printUnsafe( " \"/{s}\", {}, 0o{o} ", .{
 					path,
-					fmtUtil.BitFlags( std.os.linux.O ) { .data = args[1] },
+					fmtUtil.BitFlagsStruct( std.os.linux.O ) { .data = flags },
 					args[2]
 				} );
 			}
 
 			if ( vfs.rootNode.resolveDeep( path ) ) |node| {
-				break :_ task.currentTask.addFd( node );
+				const fd = try node.open();
+				errdefer fd.close();
+
+				break :_ @bitCast( try task.currentTask.addFd( fd ) );
 			}
 
 			break :_ task.Error.MissingFile;
@@ -192,6 +223,31 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 			( try task.currentTask.getFd( args[0] ) ).close();
 			task.currentTask.fd.items[args[0]] = null;
 			break :_ 0;
+		},
+		// dup( fd )
+		.Dup => _: {
+			if ( strace ) {
+				root.log.printUnsafe( " {} ", .{ args[0] } );
+			}
+
+			break :_ @bitCast( try task.currentTask.addFd( try task.currentTask.getFd( args[0] ) ) );
+		},
+		// dup2( oldfd, newfd )
+		.Dup2 => _: {
+			if ( strace ) {
+				root.log.printUnsafe( " {}, {} ", .{ args[0], args[1] } );
+			}
+
+			if ( task.currentTask.getFd( args[0] ) ) |fd| {
+				fd.close();
+			} else |_| {
+				if ( task.currentTask.fd.items.len <= args[0] ) {
+					try task.currentTask.fd.appendNTimes( root.kheap, null, args[0] - task.currentTask.fd.items.len + 1 );
+				}
+			}
+
+			task.currentTask.fd.items[args[0]] = try task.currentTask.getFd( args[1] );
+			break :_ @bitCast( args[0] );
 		},
 		// poll( pollfdsPtr, pollfdsLen, timeout )
 		.Poll => _: {
@@ -240,6 +296,7 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 		},
 		// mmap( ?addr, len, prot, flags, ?fd, ?offset )
 		.MMap => _: {
+			const flags: std.os.linux.MAP = @bitCast( args[3] );
 			var offset: u64 = args[5];
 
 			// x86.MMap2
@@ -248,11 +305,11 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 			}
 
 			if ( strace ) {
-				root.log.printUnsafe( " 0x{x}, 0x{x}, PROT{{ {} }}, MAP{{ {} }}, {}, 0x{x} ", .{
+				root.log.printUnsafe( " 0x{x}, 0x{x}, PROT{{ {} }}, {}, {}, 0x{x} ", .{
 					args[0],
 					args[1],
 					fmtUtil.BitFlags( std.os.linux.PROT ) { .data = args[2] },
-					fmtUtil.BitFlags( std.os.linux.MAP ) { .data = args[3] },
+					fmtUtil.BitFlagsStruct( std.os.linux.MAP ) { .data = flags },
 					@as( isize, @bitCast( args[4] ) ),
 					offset
 				} );
@@ -280,7 +337,7 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 			const ptr = @as( [*]u8, @ptrFromInt( @as( usize, @bitCast( addr ) ) ) )[0..args[1]];
 			if ( @as( isize, @bitCast( args[4] ) ) != -1 ) {
 				var allowed: usize = std.os.linux.PROT.READ | std.os.linux.PROT.EXEC;
-				if ( ( args[3] & std.os.linux.MAP.PRIVATE ) == std.os.linux.MAP.PRIVATE ) {
+				if ( flags.TYPE == .PRIVATE ) {
 					allowed |= std.os.linux.PROT.WRITE;
 				}
 
@@ -372,8 +429,33 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 				root.log.printUnsafe( " {}, {}, {} ", .{ family, args[1], protocol } );
 			}
 
-			const node = try net.createSocket( family, args[1], protocol );
-			break :_ task.currentTask.addFd( node );
+			const sock = try net.createSocket( family, args[1], protocol );
+			errdefer sock.deinit();
+
+			const fd = try sock.node.open();
+			errdefer fd.close();
+
+			break :_ @bitCast( try task.currentTask.addFd( fd ) );
+		},
+		// connect( fd, sockaddrPtr, sockaddrLen )
+		.Connect => _: {
+			var sockaddr: net.Sockaddr = undefined;
+
+			const mlen = @min( @sizeOf( net.Sockaddr ), args[2] );
+			@memcpy(
+				@as( [*]u8, @ptrCast( &sockaddr ) )[0..mlen],
+				@as( [*]const u8, @ptrFromInt( args[1] ) )[0..mlen]
+			);
+
+			if ( strace ) {
+				root.log.printUnsafe( " {}, {} ", .{ args[0], sockaddr } );
+			}
+
+			const fd = try task.currentTask.getFd( args[0] );
+			const socket = fd.getSocket() orelse break :_ task.Error.NotSocket;
+
+			try socket.connect( sockaddr );
+			break :_ 0;
 		},
 		// bind( fd, sockaddrPtr, sockaddrLen )
 		.Bind => _: {
@@ -413,7 +495,7 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 			const fd = try task.currentTask.getFd( args[0] );
 			const socket = fd.getSocket() orelse break :_ task.Error.NotSocket;
 
-			break :_ socket.sendto( sockaddr, buf );
+			break :_ @bitCast( try socket.sendto( sockaddr, buf ) );
 		},
 		// recvfrom( fd, bufPtr, bufLen, flags, sockaddrPtr, sockaddrLenPtr )
 		.RecvFrom => _: {
@@ -537,6 +619,19 @@ fn handler( id: Syscall, args: [6]usize, state: ?*x86.State, strace: bool ) task
 			}
 
 			task.currentTask.exit( args[0] );
+		},
+		.GetCwd => _: {
+			if ( strace ) {
+				root.log.printUnsafe( " [0x{x}]u8@0x{x} ", .{ args[1], args[0] } );
+			}
+
+			const buf = try util.extractSlice( u8, args[0], args[1] );
+			if ( buf.len < 2 ) {
+				break :_ task.Error.OutOfRange;
+			}
+
+			@memcpy( buf[0..1:0], "/" );
+			break :_ @bitCast( args[0] );
 		},
 		.Rename => @import( "./syscall/vfs.zig" ).rename( args, state, strace ),
 		.Link => @import( "./syscall/vfs.zig" ).link( args, state, strace ),

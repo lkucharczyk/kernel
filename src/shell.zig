@@ -40,15 +40,15 @@ const alloc: std.mem.Allocator = gpa.allocator();
 pub fn main() anyerror!void {
 	if ( std.os.argv.len >= 2 ) {
 		_ = try h( system.close( 0 ) );
-		_ = try h( system.open( std.os.argv[1], std.os.linux.O.RDONLY, 0 ) );
+		_ = try h( system.open( std.os.argv[1], .{ .ACCMODE = .RDONLY }, 0 ) );
 	}
 	if ( std.os.argv.len >= 3 ) {
 		_ = try h( system.close( 1 ) );
-		_ = try h( system.open( std.os.argv[2], std.os.linux.O.WRONLY, 0 ) );
+		_ = try h( system.open( std.os.argv[2], .{ .ACCMODE = .WRONLY }, 0 ) );
 		_ = try h( system.close( 2 ) );
-		_ = try h( system.open( std.os.argv[2], std.os.linux.O.WRONLY, 0 ) );
+		_ = try h( system.open( std.os.argv[2], .{ .ACCMODE = .WRONLY }, 0 ) );
 	}
-	print( "argv: [{}]{s}\n> ", .{ std.os.argv.len,  std.os.argv } );
+	print( "argv: [{}]{s}\n> ", .{ std.os.argv.len, std.os.argv } );
 
 	var inbuf: [BUFSIZE]u8 = .{ 0 } ** BUFSIZE;
 	var cmdbuf: [BUFSIZE]u8 = .{ 0 } ** BUFSIZE;
@@ -109,41 +109,6 @@ fn h( retval: usize ) OsError!usize {
 	return retval;
 }
 
-pub const BINARIES_SBASE = [_][:0]const u8{
-	"basename", "cal", "cat", "chgrp", "chmod", "chown", "chroot", "cksum", "cmp", "cols", "comm",
-	"cp", "cron", "cut", "date", "dd", "dirname", "du", "echo", "ed", "env", "expand", "expr",
-	"false", "find", "flock", "fold", "getconf", "grep", "head", "hostname", "join", "kill",
-	"link", "ln", "logger", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp", "mv",
-	"nice", "nl", "nohup", "od", "paste", "pathchk", "printenv", "printf", "pwd", "readlink",
-	"renice", "rev", "rm", "rmdir", "sed", "seq", "setsid", "sha1sum", "sha224sum", "sha256sum",
-	"sha384sum", "sha512-224sum", "sha512-256sum", "sha512sum", "sleep", "sort", "split", "sponge",
-	"strings", "sync", "tail", "tar", "tee", "test", "tftp", "time", "touch", "tr", "true",
-	"tsort", "tty", "uname", "unexpand", "uniq", "unlink", "uudecode", "uuencode", "wc", "which",
-	"whoami", "xargs", "xinstall", "yes"
-};
-
-const BINARIES = [_][:0]const u8{
-	"/bin/sbase-box", "/bin/sbase-box-dynamic", "/bin/sbase-box-static",
-	"/bin/ldd", "/bin/shell", "/bin/simplechat", "/bin/simplechat-server",
-	"/lib/libc.so", "/lib/ld-musl-i386.so.1", "/lib/ld-musl-x86.so.1"
-};
-
-fn extractBin( name: []const u8 ) ?[:0]const u8 {
-	for ( &BINARIES ) |bin| {
-		if ( std.mem.eql( u8, name, bin[5..] ) ) {
-			return bin;
-		}
-	}
-
-	for ( &BINARIES_SBASE ) |bin| {
-		if ( std.mem.eql( u8, name, bin ) ) {
-			return "/bin/sbase-box";
-		}
-	}
-
-	return null;
-}
-
 fn process( cmd: []const u8 ) OsError!void {
 	var iter = std.mem.tokenizeScalar( u8, cmd, ' ' );
 
@@ -160,9 +125,9 @@ fn process( cmd: []const u8 ) OsError!void {
 			print( "fork:{} {}\n", .{ res, system.getpid() } );
 		} else if ( std.mem.eql( u8, cmd0, "help" ) ) {
 			const cmd1 = iter.next() orelse "";
-			if ( std.mem.eql( u8, cmd1, "recvudp" ) ) {
+			if ( std.mem.eql( u8, cmd1, "ipaddr" ) ) {
 				write( "ipaddr [netdev file]\n" );
-				write( "ipaddr [netdev file] [ipv4 address] [mask]\n" );
+				write( "ipaddr [netdev file] [ipv4 address] [mask] [network] [gateway]\n" );
 			} else if ( std.mem.eql( u8, cmd1, "recvudp" ) ) {
 				write( "recvudp [port]\n" );
 			} else if ( std.mem.eql( u8, cmd1, "recvudpd" ) ) {
@@ -170,7 +135,57 @@ fn process( cmd: []const u8 ) OsError!void {
 			} else if ( std.mem.eql( u8, cmd1, "sendudp" ) ) {
 				write( "sendudp [ipv4 address] [port] [data...]\n" );
 			} else {
-				write( "commands: ipaddr, recvudp, recvudpd, sendudp, exit, kpanic, panic\n" );
+				write( "commands: ipaddr, ipdbg, rc, recvudp, recvudpd, sendudp, exit, kpanic, panic\n" );
+			}
+		} else if ( std.mem.eql( u8, cmd0, "rc" ) ) {
+			const sock: i32 = @bitCast( try h( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) ) );
+			defer _ = linux.close( sock );
+
+			var src: net.sockaddr.Ipv4 = undefined;
+			var srclen: u32 = @sizeOf( @TypeOf( src ) );
+			var buf: [0xffff]u8 = undefined;
+
+			const addr = linux.sockaddr.in {
+				.addr = 0,
+				.port = @byteSwap( std.fmt.parseInt( u16, iter.next() orelse return, 0 ) catch return )
+			};
+			_ = try h( linux.bind( sock, @ptrCast( &addr ), @sizeOf( linux.sockaddr.in ) ) );
+
+			var dup: [3]i32 = undefined;
+			inline for ( 0..3 ) |i| {
+				dup[i] = @bitCast( try h( system.dup( i ) ) );
+				_ = try h( system.dup2( i, sock ) );
+			}
+			defer {
+				inline for ( 0..3 ) |i| {
+					_ = system.dup2( i, dup[i] );
+					_ = system.close( dup[i] );
+				}
+			}
+
+			const output = std.io.Writer( i32, anyerror, osWrite ) { .context = dup[1] };
+			var fds = [2]linux.pollfd {
+				.{ .fd = dup[0], .events = linux.POLL.IN, .revents = 0 },
+				.{ .fd = sock  , .events = linux.POLL.IN, .revents = 0 }
+			};
+
+			var out: usize = linux.poll( &fds, fds.len, -1 );
+			while ( out > 0 ) : ( out = linux.poll( &fds, fds.len, -1 ) ) {
+				if ( ( fds[0].revents & linux.POLL.IN ) > 0 ) {
+					if ( try h( linux.read( dup[0], &buf, 1 ) ) > 0 and ( buf[0] == 0x03 or buf[0] == 0x04 ) ) {
+						return;
+					}
+				}
+
+				if ( ( fds[1].revents & linux.POLL.IN ) > 0 ) {
+					const len = try h( linux.recvfrom( sock, &buf, buf.len, 0, @ptrCast( &src ), &srclen ) );
+					const rcmd = std.mem.trim( u8, buf[0..len], " \r\n\x00" );
+					output.print( "{}: \"{s}\"\n", .{ src, rcmd } ) catch {};
+					if ( rcmd.len > 0 ) {
+						_ = try h( linux.connect( sock, &src, srclen ) );
+						process( rcmd ) catch {};
+					}
+				}
 			}
 		} else if ( std.mem.eql( u8, cmd0, "recvudp" ) ) {
 			const sock: i32 = @bitCast( try h( linux.socket( linux.PF.INET, linux.SOCK.DGRAM, linux.IPPROTO.UDP ) ) );
@@ -246,7 +261,7 @@ fn process( cmd: []const u8 ) OsError!void {
 			const path = try alloc.dupeZ( u8, iter.next() orelse return );
 			defer alloc.free( path );
 
-			const fd: i32 = @bitCast( try h( system.open( path, linux.O.RDONLY, 0 ) ) );
+			const fd: i32 = @bitCast( try h( system.open( path, .{ .ACCMODE = .RDONLY }, 0 ) ) );
 			defer _ = linux.close( fd );
 
 			var buf: [0xffff]u8 = undefined;
@@ -260,7 +275,7 @@ fn process( cmd: []const u8 ) OsError!void {
 			const path = try alloc.dupeZ( u8, iter.next() orelse return );
 			defer alloc.free( path );
 
-			const fd: i32 = @bitCast( try h( system.open( path, 0, 0 ) ) );
+			const fd: i32 = @bitCast( try h( system.open( path, .{}, 0 ) ) );
 			defer _ = system.close( fd );
 
 			var route = net.ipv4.Route {
@@ -276,8 +291,18 @@ fn process( cmd: []const u8 ) OsError!void {
 				route.dstMask = net.ipv4.Mask.init(
 					std.fmt.parseInt( u6, iter.next() orelse return, 0 ) catch return
 				);
-				route.dstNetwork = .{ .val = addr.sa.addr & route.dstMask.val };
-				route.viaAddress = .{ .val = route.dstNetwork.val | ( ( ~route.dstMask.val ) & ( @as( u32, 1 ) << 24 ) ) };
+
+				route.dstNetwork = if ( std.net.Ip4Address.parse( iter.next() orelse "", 0 ) ) |dstAddr| (
+					.{ .val = dstAddr.sa.addr }
+				) else |_| (
+					.{ .val = addr.sa.addr & route.dstMask.val }
+				);
+
+				route.viaAddress = if ( std.net.Ip4Address.parse( iter.next() orelse "", 0 ) ) |viaAddr| (
+					.{ .val = viaAddr.sa.addr }
+				) else |_| (
+					.{ .val = route.dstNetwork.val | ( ( ~route.dstMask.val ) & ( @as( u32, 1 ) << 24 ) ) }
+				);
 			}
 
 			_ = try h( system.ioctl( fd, 0, @intFromPtr( &route ) ) );
@@ -290,19 +315,37 @@ fn process( cmd: []const u8 ) OsError!void {
 			const path = try alloc.dupeZ( u8, iter.next() orelse return );
 			defer alloc.free( path );
 
-			const fd: i32 = @bitCast( try h( system.open( path, 0, 0 ) ) );
+			const fd: i32 = @bitCast( try h( system.open( path, .{}, 0 ) ) );
 			defer _ = system.close( fd );
 
 			_ = try h( system.ioctl( fd, 0, 0 ) );
-		} else if ( extractBin( cmd0 ) ) |bin| {
+		} else if ( cmd0.len > 0 ) {
 			var arena = std.heap.ArenaAllocator.init( alloc );
 			const aalloc = arena.allocator();
 			defer arena.deinit();
 
-			const argv0 = try aalloc.allocSentinel( u8, 5 + cmd0.len, 0 );
-			@memcpy( argv0[0..5], bin[0..5] );
-			@memcpy( argv0[5..], cmd0 );
+			const bin = try aalloc.allocSentinel( u8, 5 + cmd0.len, 0 );
+			@memcpy( bin[5..], cmd0 );
 
+			var stat: linux.Statx = undefined;
+			var found = false;
+			inline for ( .{ "/bin/", "/lib/" } ) |path| {
+				@memcpy( bin[0..5], path );
+				if (
+					system.statx( -100, bin.ptr, @bitCast( @as( i32, linux.AT.FDCWD ) ), linux.STATX_TYPE, &stat ) == 0
+					and ( stat.mode >> 12 ) == 0o10
+				) {
+					found = true;
+					break;
+				}
+			}
+
+			if ( !found ) {
+				print( "! Unknown command: \"{s}\"\n", .{ cmd0 } );
+				return;
+			}
+
+			const argv0 = try aalloc.dupeZ( u8, bin );
 			if ( std.mem.startsWith( u8, argv0, "/bin/sbase-box-" ) ) {
 				@memset( argv0[14..], 0 );
 			}
@@ -317,11 +360,9 @@ fn process( cmd: []const u8 ) OsError!void {
 			}
 
 			if ( try h( system.vfork() ) == 0 ) {
-				_ = h( system.execve( bin, argv.ptr, undefined ) ) catch {};
+				_ = h( system.execve( bin, argv.ptr, @ptrCast( std.os.environ.ptr ) ) ) catch {};
 				system.exit( 1 );
 			}
-		} else {
-			print( "! Unknown command: \"{s}\"\n", .{ cmd0 } );
 		}
 	}
 }

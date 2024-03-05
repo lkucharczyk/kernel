@@ -8,8 +8,8 @@ const util = @import( "./util.zig" );
 
 /// link( old: [*:0]const u8, new: [*:0]const u8 )
 pub fn link( args: [6]usize, _: ?*x86.State, strace: bool ) task.Error!isize {
-	const old = ( try util.extractCStr( args[0] ) )[1..];
-	const new = ( try util.extractCStr( args[1] ) )[1..];
+	const old = try util.extractPath( args[0] );
+	const new = try util.extractPath( args[1] );
 	if ( strace ) {
 		root.log.printUnsafe( " \"/{s}\", \"/{s}\" ", .{ old, new } );
 	}
@@ -33,7 +33,7 @@ pub fn link( args: [6]usize, _: ?*x86.State, strace: bool ) task.Error!isize {
 
 /// unlink( path: [*:0]const u8 )
 pub fn unlink( args: [6]usize, _: ?*x86.State, strace: bool ) task.Error!isize {
-	const path = ( try util.extractCStr( args[0] ) )[1..];
+	const path = try util.extractPath( args[0] );
 	if ( strace ) {
 		root.log.printUnsafe( " \"/{s}\" ", .{ path } );
 	}
@@ -61,8 +61,8 @@ pub fn unlink( args: [6]usize, _: ?*x86.State, strace: bool ) task.Error!isize {
 
 /// rename( old: [*:0]const u8, new: [*:0]const u8 )
 pub fn rename( args: [6]usize, state: ?*x86.State, strace: bool ) task.Error!isize {
-	const old = ( try util.extractCStr( args[0] ) )[1..];
-	const new = ( try util.extractCStr( args[1] ) )[1..];
+	const old = try util.extractPath( args[0] );
+	const new = try util.extractPath( args[1] );
 	if ( strace ) {
 		root.log.printUnsafe( " \"/{s}\", \"/{s}\" ", .{ old, new } );
 	}
@@ -72,25 +72,26 @@ pub fn rename( args: [6]usize, state: ?*x86.State, strace: bool ) task.Error!isi
 	return 0;
 }
 
-const STATX = struct {
-	pub const TYPE = std.os.linux.STATX_TYPE;
-	pub const MODE = std.os.linux.STATX_MODE;
-	pub const NLINK = std.os.linux.STATX_NLINK;
-	pub const UID = std.os.linux.STATX_UID;
-	pub const GID = std.os.linux.STATX_GID;
-	pub const ATIME = std.os.linux.STATX_ATIME;
-	pub const MTIME = std.os.linux.STATX_MTIME;
-	pub const CTIME = std.os.linux.STATX_CTIME;
-	pub const INO = std.os.linux.STATX_INO;
-	pub const SIZE = std.os.linux.STATX_SIZE;
-	pub const BLOCKS = std.os.linux.STATX_BLOCKS;
-	// pub const BASIC_STATS = std.os.linux.STATX_BASIC_STATS;
-	pub const BTIME = std.os.linux.STATX_BTIME;
+const STATX = packed struct(u32) {
+	TYPE: bool = false,
+	MODE: bool = false,
+	NLINK: bool = false,
+	UID: bool = false,
+	GID: bool = false,
+	ATIME: bool = false,
+	MTIME: bool = false,
+	CTIME: bool = false,
+	INO: bool = false,
+	SIZE: bool = false,
+	BLOCKS: bool = false,
+	BTIME: bool = false,
+	_: u20 = 0
 };
 
 /// statx( dirFd: ?fd_t, path: ?[*:0]const u8, flags: ?linux.AT, mask: ?linux.STATX, out: *linux.Statx )
 pub fn statx( args: [6]usize, _: ?*x86.State, strace: bool ) task.Error!isize {
 	const path: ?[:0]const u8 = if ( args[1] > 0 ) try util.extractCStr( args[1] ) else null;
+	const req: STATX = @bitCast( args[3] );
 	const out = try util.extractPtr( std.os.linux.Statx, args[4] );
 
 	if ( strace ) {
@@ -98,37 +99,57 @@ pub fn statx( args: [6]usize, _: ?*x86.State, strace: bool ) task.Error!isize {
 			@as( isize, @bitCast( args[0] ) ),
 			fmtUtil.OptionalStr { .data = path },
 			fmtUtil.BitFlags( std.os.linux.AT ) { .data = @bitCast( args[2] ) },
-			fmtUtil.BitFlags( STATX ) { .data = args[3] },
+			fmtUtil.BitFlagsStruct( STATX ) { .data = req },
 			out
 		} );
 	}
 
 	const node: *vfs.Node = if ( @as( isize, @bitCast( args[0] ) ) == -100 ) (
-		vfs.rootNode
+		if ( path ) |p| (
+			vfs.rootNode.resolveDeep( p[1..] ) orelse return task.Error.MissingFile
+		) else (
+			vfs.rootNode
+		)
 	) else if ( @as( isize, @bitCast( args[0] ) ) != -1 ) (
 		( try task.currentTask.getFd( args[0] ) ).node
 	) else {
 		return task.Error.NotImplemented;
 	};
 
-	out.mask = 0;
+	var mask = STATX {};
 
-	if ( ( args[3] & STATX.TYPE ) == STATX.TYPE ) {
-		out.mode = @as( u16, @intFromEnum( node.ntype ) ) << 12;
-		out.mask |= STATX.TYPE;
+	out.mode = 0;
+	if ( req.MODE ) {
+		out.mode |= 0o555;
+		mask.TYPE = true;
 	}
 
-	if ( ( args[3] & STATX.INO ) == STATX.INO ) {
+	if ( req.TYPE ) {
+		out.mode |= @as( u16, @intFromEnum( node.ntype ) ) << 12;
+		mask.TYPE = true;
+	}
+
+	if ( req.INO ) {
 		out.ino = node.inode;
-		out.mask |= STATX.INO;
+		mask.INO = true;
 	}
 
-	inline for ( .{ .{ STATX.ATIME, "atime" }, .{ STATX.BTIME, "btime" }, .{ STATX.CTIME, "ctime" }, .{ STATX.MTIME, "mtime" } } ) |t| {
-		if ( ( args[3] & t[0] ) == t[0] ) {
-			@field( out, t[1] ) = .{ .tv_sec = 0, .tv_nsec = 0, .__pad1 = 0 };
-			out.mask |= t[0];
+	if ( req.SIZE ) {
+		if ( node.stat( .{ .size = true } ) catch null ) |res| {
+			if ( res.size ) |size| {
+				out.size = size;
+				mask.SIZE = true;
+			}
 		}
 	}
 
+	inline for ( .{ .{ "ATIME", "atime" }, .{ "BTIME", "btime" }, .{ "CTIME", "ctime" }, .{ "MTIME", "mtime" } } ) |t| {
+		if ( @field( req, t[0] ) ) {
+			@field( out, t[1] ) = .{ .tv_sec = 0, .tv_nsec = 0, .__pad1 = 0 };
+			@field( mask, t[0] ) = true;
+		}
+	}
+
+	out.mask = @bitCast( mask );
 	return 0;
 }

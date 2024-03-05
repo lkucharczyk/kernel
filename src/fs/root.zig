@@ -16,6 +16,7 @@ const DirContext = struct {
 
 pub const RootVfs = struct {
 	const fileVTable = vfs.VTable {
+		.stat = &stat,
 		.read = &read
 	};
 
@@ -83,7 +84,7 @@ pub const RootVfs = struct {
 		return node;
 	}
 
-	pub fn read( node: *vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) usize {
+	pub fn read( node: *vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) error{}!usize {
 		const ctx: *FileContext = @alignCast( @ptrCast( node.ctx ) );
 
 		if ( fd.offset >= ctx.data.len ) {
@@ -94,6 +95,12 @@ pub const RootVfs = struct {
 		@memcpy( buf[0..len], ctx.data[fd.offset..( fd.offset + len )] );
 		fd.offset += len;
 		return len;
+	}
+
+	pub fn stat( node: *vfs.Node, _: vfs.Stat.Request ) error{}!vfs.Stat {
+		const ctx: *FileContext = @alignCast( @ptrCast( node.ctx ) );
+
+		return .{ .size = ctx.data.len };
 	}
 
 	pub fn linkAt( node: *vfs.Node, target: *vfs.Node, name: []const u8 ) std.mem.Allocator.Error!void {

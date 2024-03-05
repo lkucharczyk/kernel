@@ -258,12 +258,12 @@ pub const SerialPort = struct {
 		}
 	}
 
-	pub fn fsRead( self: *vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) u32 {
+	pub fn fsRead( self: *vfs.Node, fd: *vfs.FileDescriptor, buf: []u8 ) error{}!u32 {
 		const ctx: *SerialPort = @alignCast( @ptrCast( self.ctx ) );
 		return ctx.read( buf, fd );
 	}
 
-	pub fn fsWrite( self: *vfs.Node, _: *vfs.FileDescriptor, buf: []const u8 ) u32 {
+	pub fn fsWrite( self: *vfs.Node, _: *vfs.FileDescriptor, buf: []const u8 ) error{}!u32 {
 		const ctx: *SerialPort = @alignCast( @ptrCast( self.ctx ) );
 		return ctx.write( buf );
 	}

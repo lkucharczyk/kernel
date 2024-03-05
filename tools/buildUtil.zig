@@ -46,12 +46,12 @@ pub fn setCcEnv(
 			++ (
 				if ( linkage ) |l| switch ( l ) {
 					.dynamic => "-dynamic -target x86-linux-musl -fPIC",
-					.static => "-static -target x86-linux-none",
+					.static => "-static -target x86-linux-musl",
 				} else (
 					"-target x86-linux-none"
 				)
 			)
-			++ " -ffreestanding -nostdinc -nostdlib -march=pentium4"
+			++ " -ffreestanding -nostdinc -march=pentium4"
 			++ " -isystem" ++ sysroot ++ "/include/"
 			++ " -isysroot" ++ sysroot ++ "/"
 			++ " -L" ++ sysroot ++ "/lib/"

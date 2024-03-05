@@ -22,10 +22,10 @@ pub fn BitFlags( comptime T: type ) type {
 
 				if ( val > 0 and ( self.data & val ) == val ) {
 					if ( first ) {
-						try std.fmt.format( writer, "{s}", .{ d.name } );
+						_ = try writer.write( d.name );
 						first = false;
 					} else {
-						try std.fmt.format( writer, " | {s}", .{ d.name } );
+						_ = try writer.write( " | " ++ d.name );
 					}
 				}
 			}
@@ -33,6 +33,48 @@ pub fn BitFlags( comptime T: type ) type {
 			if ( first and zeroDecl != null ) {
 				_ = try writer.write( zeroDecl.? );
 			}
+		}
+	};
+}
+
+pub fn BitFlagsStruct( comptime T: type ) type {
+	return struct {
+		data: T,
+		pub fn format( self: @This(), _: []const u8, _: std.fmt.FormatOptions, writer: anytype ) anyerror!void {
+			const name = comptime _: {
+				const name = @typeName( T );
+				break :_ name[0..( std.mem.indexOf( u8, name, "__struct_" ) orelse name.len )];
+			};
+			_ = try writer.write( name ++ "{ " );
+
+			comptime var firstField = true;
+			inline for ( @typeInfo( T ).Struct.fields ) |f| {
+				if ( f.type != bool and f.name[0] != '_' ) {
+					if ( !firstField ) {
+						try std.fmt.format( writer, ", .{s} = {}", .{ f.name, @field( self.data, f.name ) } );
+					} else {
+						try std.fmt.format( writer, ".{s} = {}", .{ f.name, @field( self.data, f.name ) } );
+					}
+					firstField = false;
+				}
+			}
+
+			var firstFlag = true;
+			inline for ( @typeInfo( T ).Struct.fields ) |f| {
+				if ( f.type == bool and @field( self.data, f.name ) ) {
+					if ( !firstFlag ) {
+						_ = try writer.write( " | " ++ f.name );
+					} else if ( !firstField ) {
+						_ = try writer.write( ", " ++ f.name );
+						firstFlag = false;
+					} else {
+						_ = try writer.write( f.name );
+						firstFlag = false;
+					}
+				}
+			}
+
+			_ = try writer.write( " }" );
 		}
 	};
 }

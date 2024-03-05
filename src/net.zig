@@ -43,7 +43,7 @@ pub fn createInterface( device: Device ) *Interface {
 
 pub fn createSocket(
 	family: sockaddr.Family, flags: u32, protocol: ipv4.Protocol
-) error{ AddressFamilyNotSupported, InvalidArgument, ProtocolNotSupported, OutOfMemory }!*vfs.Node {
+) error{ AddressFamilyNotSupported, InvalidArgument, ProtocolNotSupported, OutOfMemory }!*Socket {
 	const stype = Socket.Type.getType( flags ) orelse return error.InvalidArgument;
 
 	if ( family != .Ipv4 ) {
@@ -60,14 +60,17 @@ pub fn createSocket(
 	ptr.protocol = protocol;
 	ptr.init( root.kheap );
 
-	return &ptr.node;
+	return ptr;
 }
 
 pub fn createSubtask( node: *vfs.Node, events: task.PollFd.Events, subtask: *const fn( *task.PollFd ) void ) std.mem.Allocator.Error!void {
-	try pollfd.append( root.kheap, .{
-		.fd = @bitCast( try task.currentTask.addFd( node ) ),
-		.reqEvents = events
-	} );
+	const fd = try node.open();
+	errdefer fd.close();
+
+	const nfd = try netTask.addFd( fd );
+	errdefer netTask.fd.items[nfd] = null;
+
+	try pollfd.append( root.kheap, .{ .fd = @bitCast( nfd ), .reqEvents = events } );
 	try subtasks.append( root.kheap, subtask );
 }
 

@@ -200,8 +200,8 @@ pub fn write( _: ?*anyopaque, msg: []const u8 ) error{}!usize {
 	return i;
 }
 
-fn writeFs( _: *vfs.Node, _: *vfs.FileDescriptor, msg: []const u8 ) u32 {
-	return write( null, msg ) catch unreachable;
+fn writeFs( _: *vfs.Node, _: *vfs.FileDescriptor, msg: []const u8 ) error{}!usize {
+	return write( null, msg );
 }
 
 pub fn print( comptime fmt: []const u8, args: anytype ) !void {

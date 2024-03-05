@@ -110,17 +110,18 @@ const Elf32 = struct {
 
 					switch ( chdr.ch_type ) {
 						.ZLIB => {
-							var zlibStream = try std.compress.zlib.decompressStream( alloc, rawStream.reader() );
-							defer zlibStream.deinit();
-
+							var zlibStream = std.compress.zlib.decompressor( rawStream.reader() );
 							_ = try zlibStream.reader().readAll( decompressed );
 						},
-						.ZSTD => {
-							var zstdStream = std.compress.zstd.decompressStream( alloc, rawStream.reader() );
-							defer zstdStream.deinit();
+						// .ZSTD => {
+						// 	const buf = try alloc.alloc( u8, 1 << 23 );
+						// 	defer alloc.free( buf );
 
-							_ = try zstdStream.reader().readAll( decompressed );
-						},
+						// 	var zstdStream = std.compress.zstd.decompressor( rawStream.reader(), .{
+						// 		.window_buffer = buf
+						// 	} );
+						// 	_ = try zstdStream.reader().readAll( decompressed );
+						// },
 						else => continue
 					}
 

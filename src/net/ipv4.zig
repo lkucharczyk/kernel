@@ -35,6 +35,8 @@ pub const Mask = packed struct(u32) {
 	pub fn init( val: u6 ) Mask {
 		if ( val == 32 ) {
 			return .{ .val = std.math.maxInt( u32 ) };
+		} else if ( val == 0 ) {
+			return .{ .val = 0 };
 		} else {
 			return .{ .val = @byteSwap(
 				@as( u32, std.math.maxInt( u32 ) ) << @as( u5, @truncate( 32 - val ) )
@@ -177,7 +179,7 @@ const FragmentedPacket = struct {
 			return false;
 		}
 
-		try self.data.insertSlice(header.flags.fragmentOffset, data[@sizeOf( Header )..] );
+		try self.data.insertSlice( header.flags.fragmentOffset, data[@sizeOf( Header )..] );
 
 		for ( self.sizes.items, 0.. ) |*size, i| {
 			if ( size[0] == s ) {
@@ -207,10 +209,7 @@ const FragmentedPacket = struct {
 		if ( !header.flags.moreFragments ) {
 			self.end = true;
 		}
-		if ( self.end and self.sizes.items.len == 1 ) {
-			return true;
-		}
-		return false;
+		return self.end and self.sizes.items.len == 1;
 	}
 
 	pub fn getData( self: *FragmentedPacket ) []u8 {
@@ -363,7 +362,9 @@ pub fn route( addr: Address ) ?struct{ *net.Interface, net.ethernet.Address } {
 
 				return .{
 					interface,
-					interface.ipv4Neighbours.get( addr ) orelse net.ethernet.Address.Broadcast
+					interface.ipv4Neighbours.get( addr )
+						orelse interface.ipv4Neighbours.get( interface.ipv4Route.?.viaAddress )
+						orelse net.ethernet.Address.Broadcast
 				};
 			}
 		}

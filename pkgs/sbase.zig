@@ -4,6 +4,19 @@ const util = @import( "../tools/buildUtil.zig" );
 const SymlinkStep = @import( "../tools/symlinkStep.zig" );
 const PackagesStep = @import( "../tools/packagesStep.zig" );
 
+pub const BINARIES_SBASE = [_][:0]const u8{
+	"basename", "cal", "cat", "chgrp", "chmod", "chown", "chroot", "cksum", "cmp", "cols", "comm",
+	"cp", "cron", "cut", "date", "dd", "dirname", "du", "echo", "ed", "env", "expand", "expr",
+	"false", "find", "flock", "fold", "getconf", "grep", "head", "hostname", "join", "kill",
+	"link", "ln", "logger", "logname", "ls", "md5sum", "mkdir", "mkfifo", "mknod", "mktemp", "mv",
+	"nice", "nl", "nohup", "od", "paste", "pathchk", "printenv", "printf", "pwd", "readlink",
+	"renice", "rev", "rm", "rmdir", "sed", "seq", "setsid", "sha1sum", "sha224sum", "sha256sum",
+	"sha384sum", "sha512-224sum", "sha512-256sum", "sha512sum", "sleep", "sort", "split", "sponge",
+	"strings", "sync", "tail", "tar", "tee", "test", "tftp", "time", "touch", "tr", "true",
+	"tsort", "tty", "uname", "unexpand", "uniq", "unlink", "uudecode", "uuencode", "wc", "which",
+	"whoami", "xargs", "xinstall", "yes"
+};
+
 pub fn register( packages: *PackagesStep ) void {
 	packages.registerPackage( "sbase", build );
 }
@@ -46,7 +59,6 @@ pub fn build( b: *std.Build, target: std.Target, packages: *PackagesStep ) anyer
 	sbaseDyn.step.dependOn( libc );
 	util.setCcEnv( sbaseDyn, target.cpu.arch, .dynamic, "../../../..", .{
 		.CFLAGS = "-include ../../../../zig-out/include/limits.h",
-		.LDFLAGS = "-lc"
 	} );
 
 	const sbaseStatic = b.addSystemCommand( &.{
@@ -62,10 +74,20 @@ pub fn build( b: *std.Build, target: std.Target, packages: *PackagesStep ) anyer
 	sbaseStatic.step.dependOn( libc );
 	util.setCcEnv( sbaseStatic, target.cpu.arch, .static, "../../../..", .{
 		.CFLAGS = "-include ../../../../zig-out/include/limits.h",
-		.LDFLAGS = "../../../../zig-out/lib/libc.a ../../../../zig-out/lib/crt1.o"
 	} );
 
-	var sbase = SymlinkStep.create( b, &.{ .{ "./zig-out/bin/sbase-box", "sbase-box-static" } } );
+	const symlinks = comptime _: {
+		var symlinks: [BINARIES_SBASE.len + 1][2][]const u8 = undefined;
+		symlinks[0] = .{ "./zig-out/bin/sbase-box", "sbase-box-static" };
+
+		for ( BINARIES_SBASE, 1.. ) |bin, i| {
+			symlinks[i] = .{ "./zig-out/bin/" ++ bin, "sbase-box" };
+		}
+
+		break :_ symlinks;
+	};
+
+	var sbase = SymlinkStep.create( b, &symlinks );
 	sbase.step.name = "install sbase";
 	sbase.step.dependOn( &sbaseDynInstall.step );
 	sbase.step.dependOn( &sbaseStaticInstall.step );
@@ -89,6 +111,24 @@ test "sbase.dynamic.echo" {
 		"/bin/sbase-box-dynamic",
 		"/bin/echo test multiline\nstring",
 		"test multiline\r\nstring\r\n"
+	);
+}
+
+test "sbase.static.env" {
+	try qemu.runElfTest(
+		&.{},
+		"/bin/sbase-box-static",
+		"/bin/env A=1 B=2",
+		"A=1\r\nB=2\r\n"
+	);
+}
+
+test "sbase.dynamic.env" {
+	try qemu.runElfTest(
+		&.{},
+		"/bin/sbase-box-dynamic",
+		"/bin/env A=1 B=2",
+		"A=1\r\nB=2\r\n"
 	);
 }
 
